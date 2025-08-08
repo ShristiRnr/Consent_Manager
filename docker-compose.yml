@@ -1,0 +1,177 @@
+services:
+  # ✅ Metadata DB (Master)
+  postgres-master:
+    image: postgres:14
+    container_name: postgres-master
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: consent_master
+    ports:
+      - "5432:5432"
+    volumes:
+      - master_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      retries: 5
+
+  # ✅ Cluster: US East
+  postgres-us-east:
+    image: postgres:14
+    container_name: postgres-us-east
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: consent_us
+    ports:
+      - "5433:5432"
+    volumes:
+      - us_east_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      retries: 5
+
+  # ✅ Cluster: EU West
+  postgres-eu-west:
+    image: postgres:14
+    container_name: postgres-eu-west
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: consent_eu
+    ports:
+      - "5434:5432"
+    volumes:
+      - eu_west_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      retries: 5
+
+  # ✅ Main Consent API Server
+  consent-server:
+    platform: linux/amd64
+    image: rain210/arc-backend:latest
+    # build:
+      # context: .
+      # dockerfile: Dockerfile
+    container_name: consent-manager
+    restart: always
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+      postgres-us-east:
+        condition: service_healthy
+      postgres-eu-west:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+      DATABASE_US_EAST: postgres://postgres:postgres@postgres-us-east:5432/consent_us?sslmode=disable
+      DATABASE_EU_WEST: postgres://postgres:postgres@postgres-eu-west:5432/consent_eu?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      DEBUG_ADMIN_SECRET: ${DEBUG_ADMIN_SECRET}
+      ADMIN_TOKEN_TTL: 1h
+      USER_TOKEN_TTL: 12h
+    working_dir: /app
+    command: "/app/bin/server"
+
+  # 🔁 Retry Worker (Webhook Retry Queue)
+  retry-worker:
+    image: rain210/arc-backend:latest
+    # build:
+    #   context: .
+    container_name: retry-worker
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+    command: "/app/bin/retry-worker"
+
+  # 🛠️ DB Migration Job
+  migrate:
+    image: rain210/arc-backend:latest
+    # build:
+    #   context: .
+    container_name: migrate
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+    command: "/app/bin/migrate"
+    restart: "no"
+  
+  consent-cli:
+    image: rain210/arc-backend:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: consent-cli
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+      DATABASE_US_EAST: postgres://postgres:postgres@postgres-us-east:5432/consent_us?sslmode=disable
+      DATABASE_EU_WEST: postgres://postgres:postgres@postgres-eu-west:5432/consent_eu?sslmode=disable
+    working_dir: /app
+    entrypoint: /bin/sh
+    tty: true
+    stdin_open: true
+    command: ["-c", "echo '💡 Use docker exec -it consent-cli /app/bin/consentctl --help' && sleep infinity"]
+
+  # 🔐 API Key Generator
+  genkey:
+    image: rain210/arc-backend:latest
+    # build:
+    #   context: .
+    container_name: genkey
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+    command: "/app/bin/genkey"
+    restart: "no"
+
+  # 🧪 Optional: pgAdmin for debugging
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: consent@rnrtechs.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:5050"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres-master
+      - postgres-us-east
+      - postgres-eu-west
+
+  # 🛠️ Setup tenant tool
+  setup-tenant:
+    image: rain210/arc-backend:latest
+    # build: .
+    command: "/app/bin/setup-tenant"
+    environment:
+      TENANT_NAME: Acme Corp
+      TENANT_CLUSTER: us-east
+      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+      DATABASE_US_EAST: postgres://postgres:postgres@postgres-us-east:5432/consent_us?sslmode=disable
+      DATABASE_EU_WEST: postgres://postgres:postgres@postgres-eu-west:5432/consent_eu?sslmode=disable
+    restart: "no"
+
+volumes:
+  master_data:
+  us_east_data:
+  eu_west_data:
+  pgadmin_data:
