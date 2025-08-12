@@ -7,13 +7,14 @@ import (
 	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/middlewares"
 	"consultrnr/consent-manager/internal/models"
+	"consultrnr/consent-manager/internal/services"
 	"consultrnr/consent-manager/pkg/log"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
 	"net/http"
-	"time"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -26,27 +27,27 @@ type LoginRequest struct {
 }
 
 type LoginResponse struct {
-	Token               string   `json:"token"`
-	UserID              string   `json:"userId"`
-	Email               string   `json:"email"`
-	Phone               string   `json:"phone"`
-	Tenants             []string `json:"tenants,omitempty"`
-	Role                string   `json:"role"`
-	CanManageConsent    bool     `json:"canManageConsent,omitempty"`
-	CanManageGrievance  bool     `json:"canManageGrievance,omitempty"`
-	CanManagePurposes   bool     `json:"canManagePurposes,omitempty"`
-	CanManageAuditLogs  bool     `json:"canManageAuditLogs,omitempty"`
-	ExpiresIn           int64    `json:"expiresIn"`
+	Token              string   `json:"token"`
+	UserID             string   `json:"userId"`
+	Email              string   `json:"email"`
+	Phone              string   `json:"phone"`
+	Tenants            []string `json:"tenants,omitempty"`
+	Role               string   `json:"role"`
+	CanManageConsent   bool     `json:"canManageConsent,omitempty"`
+	CanManageGrievance bool     `json:"canManageGrievance,omitempty"`
+	CanManagePurposes  bool     `json:"canManagePurposes,omitempty"`
+	CanManageAuditLogs bool     `json:"canManageAuditLogs,omitempty"`
+	ExpiresIn          int64    `json:"expiresIn"`
 }
 
-type AdminLoginResponse struct {
-	Token     string `json:"token"`
-	AdminID   string `json:"adminId"`
-	Email     string `json:"email"`
-	Phone     string `json:"phone"`
-	TenantID  string `json:"tenantId"`
-	ExpiresIn int64  `json:"expiresIn"`
-	Role      string `json:"role"`
+type FiduciaryLoginResponse struct {
+	Token       string `json:"token"`
+	FiduciaryID string `json:"fiduciaryId"`
+	Email       string `json:"email"`
+	Phone       string `json:"phone"`
+	TenantID    string `json:"tenantId"`
+	ExpiresIn   int64  `json:"expiresIn"`
+	Role        string `json:"role"`
 }
 
 type ForgotPasswordRequest struct {
@@ -58,15 +59,9 @@ type ResetPasswordRequest struct {
 	NewPassword string `json:"newPassword"`
 }
 
-// ===== Common Utility =====
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
-}
+// ===== FIDUCIARY AUTH HANDLERS =====
 
-
-// ===== USER AUTH HANDLERS =====
-
-func UserLoginHandler(db *gorm.DB, cfg config.Config, privateKey *rsa.PrivateKey) http.HandlerFunc {
+func FiduciaryLoginHandler(db *gorm.DB, cfg config.Config, privateKey *rsa.PrivateKey) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req LoginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -78,120 +73,29 @@ func UserLoginHandler(db *gorm.DB, cfg config.Config, privateKey *rsa.PrivateKey
 			return
 		}
 
-		var user models.MasterUser
-		if err := db.Preload("Tenants").Where("email = ?", req.Email).First(&user).Error; err != nil {
+		var fiduciary models.FiduciaryUser
+		if err := db.Where("LOWER(email) = ?", strings.ToLower(req.Email)).First(&fiduciary).Error; err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		if err := bcrypt.CompareHashAndPassword([]byte(fiduciary.PasswordHash), []byte(req.Password)); err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
 
-		tenantIDs := make([]string, len(user.Tenants))
-		for i, t := range user.Tenants {
-			tenantIDs[i] = t.TenantID.String()
-		}
-
-		accessToken, err := auth.GenerateUserToken(user, tenantIDs, privateKey, cfg.UserTokenTTL)
+		accessToken, err := auth.GenerateFiduciaryToken(fiduciary, privateKey, cfg.AdminTokenTTL)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		refreshToken, err := auth.GenerateUserRefreshToken(user, tenantIDs, privateKey, cfg.UserRefreshTokenTTL)
+		refreshToken, err := auth.GenerateFiduciaryRefreshToken(fiduciary, privateKey, cfg.AdminRefreshTokenTTL)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 
 		http.SetCookie(w, &http.Cookie{
-			Name:     "refresh_token",
-			Value:    refreshToken,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   false,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   int(cfg.UserRefreshTokenTTL.Seconds()),
-		})
-
-		resp := LoginResponse{
-			Token:              accessToken,
-			UserID:             user.UserID.String(),
-			Email:              user.Email,
-			Phone:              user.Phone,
-			Tenants:            tenantIDs,
-			Role:               user.Role,
-			CanManageConsent:   user.CanManageConsent,
-			CanManageGrievance: user.CanManageGrievance,
-			CanManagePurposes:  user.CanManagePurposes,
-			CanManageAuditLogs: user.CanManageAuditLogs,
-			ExpiresIn:          int64(cfg.UserTokenTTL.Seconds()),
-		}
-		writeJSON(w, http.StatusOK, resp)
-	}
-}
-
-func UserRefreshHandler(cfg config.Config, privateKey *rsa.PrivateKey, publicKey *rsa.PublicKey) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("refresh_token")
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "missing refresh token")
-			return
-		}
-		claims, err := auth.ParseUserRefreshToken(cookie.Value, publicKey)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid refresh token")
-			return
-		}
-		accessToken, err := auth.GenerateUserToken(claims.User, claims.Tenants, privateKey, cfg.UserTokenTTL)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "token generation failed")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"token":     accessToken,
-			"expiresIn": int64(cfg.UserTokenTTL.Seconds()),
-		})
-	}
-}
-
-// ===== ADMIN AUTH HANDLERS =====
-
-func AdminLoginHandler(db *gorm.DB, cfg config.Config, privateKey *rsa.PrivateKey) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req LoginRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request")
-			return
-		}
-		if req.Email == "" || req.Password == "" {
-			writeError(w, http.StatusBadRequest, "email and password required")
-			return
-		}
-
-		var admin models.AdminUser
-		if err := db.Where("LOWER(email) = ?", strings.ToLower(req.Email)).First(&admin).Error; err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
-			return
-		}
-		if err := bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(req.Password)); err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
-			return
-		}
-
-		accessToken, err := auth.GenerateAdminToken(admin.AdminID.String(), admin.TenantID.String(), admin.Role, privateKey, cfg.AdminTokenTTL)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		refreshToken, err := auth.GenerateAdminRefreshToken(admin.AdminID.String(), admin.TenantID.String(), admin.Role, privateKey, cfg.AdminRefreshTokenTTL)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-
-		http.SetCookie(w, &http.Cookie{
-			Name:     "admin_refresh_token",
+			Name:     "fiduciary_refresh_token",
 			Value:    refreshToken,
 			Path:     "/",
 			HttpOnly: true,
@@ -200,14 +104,14 @@ func AdminLoginHandler(db *gorm.DB, cfg config.Config, privateKey *rsa.PrivateKe
 			MaxAge:   int(cfg.AdminRefreshTokenTTL.Seconds()),
 		})
 
-		resp := AdminLoginResponse{
-			Token:     accessToken,
-			AdminID:   admin.AdminID.String(),
-			Email:     admin.Email,
-			Phone:     admin.Phone,
-			TenantID:  admin.TenantID.String(),
-			ExpiresIn: int64(cfg.AdminTokenTTL.Seconds()),
-			Role:      admin.Role,
+		resp := FiduciaryLoginResponse{
+			Token:       accessToken,
+			FiduciaryID: fiduciary.ID.String(),
+			Email:       fiduciary.Email,
+			Phone:       fiduciary.Phone,
+			TenantID:    fiduciary.TenantID.String(),
+			ExpiresIn:   int64(cfg.AdminTokenTTL.Seconds()),
+			Role:        fiduciary.Role,
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
@@ -233,89 +137,124 @@ type CreateUserRequest struct {
 	CanManageAuditLogs bool   `json:"canManageAuditLogs"`
 }
 
-func AdminCreateUserHandler(db *gorm.DB) http.HandlerFunc {
+func FiduciaryCreateUserHandler(db *gorm.DB, auditService *services.AuditService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(contextKey.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+		if !ok {
+			writeError(w, http.StatusForbidden, "fiduciary access required")
+			return
+		}
+
 		var req CreateUserRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request")
 			return
 		}
-		if req.Email == "" || req.Password == "" {
-			writeError(w, http.StatusBadRequest, "email and password required")
+
+		var existingUser models.FiduciaryUser
+		if err := db.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
+			writeError(w, http.StatusConflict, "email already in use")
 			return
 		}
 
 		hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-		newUser := models.MasterUser{
-			UserID:              uuid.New(),
-			Email:               req.Email,
-			Phone:               req.Phone,
-			Password:            string(hash),
-			FirstName:           req.FirstName,
-			LastName:            req.LastName,
-			Age:                 req.Age,
-			GuardianEmail:       req.GuardianEmail,
-			Location:            req.Location,
-			Role:                req.Role,
-			CanManageConsent:    req.CanManageConsent,
-			CanManageGrievance:  req.CanManageGrievance,
-			CanManagePurposes:   req.CanManagePurposes,
-			CanManageAuditLogs:  req.CanManageAuditLogs,
-			CreatedAt:           time.Now(),
+		newUser := models.FiduciaryUser{
+			ID:                 uuid.New(),
+			TenantID:           uuid.MustParse(claims.TenantID),
+			Email:              req.Email,
+			Phone:              req.Phone,
+			PasswordHash:       string(hash),
+			Name:               req.FirstName + " " + req.LastName,
+			Role:               req.Role,
+			CanManageConsent:   req.CanManageConsent,
+			CanManageGrievance: req.CanManageGrievance,
+			CanManagePurposes:  req.CanManagePurposes,
+			CanManageAuditLogs: req.CanManageAuditLogs,
 		}
 
 		if err := db.Create(&newUser).Error; err != nil {
+			log.Logger.Error().Err(err).Msg("failed to create user")
 			writeError(w, http.StatusInternalServerError, "failed to create user")
 			return
 		}
 
+		// Audit logging for fiduciary user creation
+		if auditService != nil {
+			fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
+			tenantID, _ := uuid.Parse(claims.TenantID)
+			go auditService.Create(r.Context(), fiduciaryID, tenantID, newUser.ID, "fiduciary_user_created", "created", claims.FiduciaryID, r.RemoteAddr, "", "", map[string]interface{}{
+				"email": newUser.Email,
+				"name":  newUser.Name,
+				"role":  newUser.Role,
+			})
+		}
+
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"message": "user created successfully",
-			"userId":  newUser.UserID,
+			"userId":  newUser.ID,
 		})
 	}
 }
 
-func UpdateUserHandler(db *gorm.DB) http.HandlerFunc {
+func UserMeHandler(db *gorm.DB, auditService *services.AuditService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(contextKey.UserClaimsKey).(*auth.UserClaims)
-		if !ok || claims == nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+		claims, ok := r.Context().Value(contextKey.UserClaimsKey).(*auth.DataPrincipalClaims)
+		if !ok {
+			writeError(w, http.StatusForbidden, "user access required")
 			return
 		}
 
-		var user models.MasterUser
-		if err := db.Where("user_id = ?", claims.UserID).First(&user).Error; err != nil {
+		var user models.DataPrincipal
+		if err := db.Where("id = ?", claims.ID).First(&user).Error; err != nil {
 			writeError(w, http.StatusNotFound, "user not found")
 			return
 		}
 
-		var updateData map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
+		// Audit logging for data principal access
+		if auditService != nil {
+			userID, _ := uuid.Parse(claims.ID)
+			tenantID, _ := uuid.Parse(claims.TenantID)
+			go auditService.Create(r.Context(), userID, tenantID, userID, "data_principal_accessed", "accessed", claims.ID, r.RemoteAddr, "", "", map[string]interface{}{
+				"email": user.Email,
+			})
+		}
+
+		writeJSON(w, http.StatusOK, user)
+	}
+}
+
+func UpdateUserHandler(db *gorm.DB, auditService *services.AuditService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(contextKey.UserClaimsKey).(*auth.DataPrincipalClaims)
+		if !ok {
+			writeError(w, http.StatusForbidden, "user access required")
+			return
+		}
+
+		var user models.DataPrincipal
+		if err := db.Where("id = ?", claims.ID).First(&user).Error; err != nil {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+
+		var req models.DataPrincipal
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request")
 			return
 		}
 
-		if email, ok := updateData["email"].(string); ok {
-			user.Email = email
+		// Update fields
+		if req.FirstName != "" {
+			user.FirstName = req.FirstName
 		}
-		if phone, ok := updateData["phone"].(string); ok {
-			user.Phone = phone
+		if req.LastName != "" {
+			user.LastName = req.LastName
 		}
-		if firstName, ok := updateData["firstName"].(string); ok {
-			user.FirstName = firstName
+		if req.Phone != "" {
+			user.Phone = req.Phone
 		}
-		if lastName, ok := updateData["lastName"].(string); ok {
-			user.LastName = lastName
-		}
-		if location, ok := updateData["location"].(string); ok {
-			user.Location = location
-		}
-		if ageFloat, ok := updateData["age"].(float64); ok {
-			user.Age = int(ageFloat)
-		}
-		if guardianEmail, ok := updateData["guardianEmail"].(string); ok {
-			user.GuardianEmail = guardianEmail
+		if req.Location != "" {
+			user.Location = req.Location
 		}
 
 		if err := db.Save(&user).Error; err != nil {
@@ -323,55 +262,18 @@ func UpdateUserHandler(db *gorm.DB) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"message": "user updated successfully",
-			"user":    user,
-		})
-	}
-}
-
-func UserMeHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(contextKey.UserClaimsKey).(*auth.UserClaims)
-		if !ok || claims == nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
+		// Audit logging for data principal update
+		if auditService != nil {
+			userID, _ := uuid.Parse(claims.ID)
+			tenantID, _ := uuid.Parse(claims.TenantID)
+			go auditService.Create(r.Context(), userID, tenantID, userID, "data_principal_updated", "updated", claims.ID, r.RemoteAddr, "", "", map[string]interface{}{
+				"email": user.Email,
+			})
 		}
 
-		user, err := middlewares.GetUserData(db.MasterDB, r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to fetch user data")
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"user_id": claims.UserID,
-			"user": map[string]interface{}{
-				"id":        user.UserID.String(),
-				"firstName": user.FirstName,
-				"lastName":  user.LastName,
-				"age":       user.Age,
-				"guardian":  user.GuardianEmail,
-				"location":  user.Location,
-				"email":     user.Email,
-				"phone":     user.Phone,
-				"tenants":   user.Tenants,
-				"createdAt": user.CreatedAt,
-			},
-			"email":              claims.Email,
-			"phone":              claims.Phone,
-			"tenants":            claims.Tenants,
-			"role":               claims.User.Role,               // moved inside User
-			"canManageConsent":   claims.User.CanManageConsent,   // moved inside User
-			"canManageGrievance": claims.User.CanManageGrievance, // moved inside User
-			"canManagePurposes":  claims.User.CanManagePurposes,  // moved inside User
-			"canManageAuditLogs": claims.User.CanManageAuditLogs, // moved inside User
-			"exp":                claims.ExpiresAt,
-			"iat":                claims.IssuedAt,
-		})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "user updated"})
 	}
 }
-
 
 func UserLogoutHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -390,150 +292,98 @@ func UserLogoutHandler() http.HandlerFunc {
 	}
 }
 
-func UserForgotPasswordHandler(db *gorm.DB, emailSender func(to, token string) error) http.HandlerFunc {
+func FiduciaryMeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req ForgotPasswordRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request")
-			return
-		}
-
-		var user models.MasterUser
-		if err := db.Where("email = ?", req.Email).First(&user).Error; err != nil {
-			writeJSON(w, http.StatusOK, map[string]string{"message": "if user exists, email sent"})
-			return
-		}
-
-		resetToken := uuid.New().String()
-		user.PasswordResetToken = resetToken
-		user.PasswordResetExpiry = time.Now().Add(30 * time.Minute)
-		db.Save(&user)
-
-		_ = emailSender(user.Email, resetToken)
-		writeJSON(w, http.StatusOK, map[string]string{"message": "if user exists, email sent"})
-	}
-}
-
-func UserResetPasswordHandler(db *gorm.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req ResetPasswordRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request")
-			return
-		}
-
-		var user models.MasterUser
-		if err := db.Where("password_reset_token = ?", req.Token).First(&user).Error; err != nil {
-			writeError(w, http.StatusBadRequest, "invalid or expired token")
-			return
-		}
-		if user.PasswordResetExpiry.Before(time.Now()) {
-			writeError(w, http.StatusBadRequest, "token expired")
-			return
-		}
-
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to set password")
-			return
-		}
-
-		user.Password = string(hash)
-		user.PasswordResetToken = ""
-		user.PasswordResetExpiry = time.Time{}
-		db.Save(&user)
-
-		writeJSON(w, http.StatusOK, map[string]string{"message": "password updated"})
-	}
-}
-
-func AdminMeHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(contextKey.AdminClaimsKey).(*auth.AdminClaims)
-		if !ok || claims == nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-
-		admin, err := GetAdminData(db.MasterDB, r.Context())
+		fiduciary, err := GetFiduciaryData(db.MasterDB, r.Context())
 		if err != nil {
 			if err == gorm.ErrRecordNotFound {
-				writeError(w, http.StatusNotFound, "admin not found")
+				writeError(w, http.StatusNotFound, "fiduciary not found")
 				return
 			}
-			log.Logger.Error().Err(err).Msg("failed to fetch admin data")
-			writeError(w, http.StatusInternalServerError, "failed to fetch admin data")
+			log.Logger.Error().Err(err).Msg("failed to fetch fiduciary data")
+			writeError(w, http.StatusInternalServerError, "failed to fetch fiduciary data")
 			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"admin_id":   claims.AdminID,
-			"tenant_id":  claims.TenantID,
-			"email":      admin.Email,
-			"phone":      admin.Phone,
-			"name":       admin.Name,
-			"created_at": admin.CreatedAt,
-			"role":       claims.Role,
-			"exp":        claims.ExpiresAt,
-			"iat":        claims.IssuedAt,
+			"fiduciary_id": fiduciary.ID,
+			"tenant_id":    fiduciary.TenantID,
+			"email":        fiduciary.Email,
+			"phone":        fiduciary.Phone,
+			"name":         fiduciary.Name,
+			"created_at":   fiduciary.CreatedAt,
+			"role":         fiduciary.Role,
 		})
 	}
 }
 
-func GetAdminData(db *gorm.DB, ctx context.Context) (*models.AdminUser, error) {
-	claims, ok := ctx.Value(contextKey.AdminClaimsKey).(*auth.AdminClaims)
-	if !ok || claims == nil {
-		return nil, http.ErrNoCookie
+func GetFiduciaryData(db *gorm.DB, ctx context.Context) (*models.FiduciaryUser, error) {
+	claims := middlewares.GetFiduciaryAuthClaims(ctx)
+	if claims == nil {
+		return nil, gorm.ErrRecordNotFound
 	}
 
-	var admin models.AdminUser
-	if err := db.Where("admin_id = ?", claims.AdminID).First(&admin).Error; err != nil {
+	var fiduciary models.FiduciaryUser
+	if err := db.Where("id = ?", claims.FiduciaryID).First(&fiduciary).Error; err != nil {
 		return nil, err
 	}
-	return &admin, nil
+	return &fiduciary, nil
 }
 
-func GetAdminById() http.HandlerFunc {
+func GetFiduciaryByID() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var admin models.AdminUser
-		if err := db.MasterDB.Where("admin_id = ?", r.Header.Get("admin_id")).First(&admin).Error; err != nil {
+		var fiduciary models.FiduciaryUser
+		fiduciaryID := r.Header.Get("fiduciary_id")
+		if err := db.MasterDB.Where("id = ?", fiduciaryID).First(&fiduciary).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
-				writeError(w, http.StatusNotFound, "admin not found")
+				writeError(w, http.StatusNotFound, "fiduciary not found")
 				return
 			}
-			log.Logger.Error().Err(err).Msg("failed to fetch admin data")
-			writeError(w, http.StatusInternalServerError, "failed to fetch admin data")
+			log.Logger.Error().Err(err).Msg("failed to fetch fiduciary data")
+			writeError(w, http.StatusInternalServerError, "failed to fetch fiduciary data")
 			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"admin_id":   admin.AdminID,
-			"tenant_id":  admin.TenantID,
-			"email":      admin.Email,
-			"phone":      admin.Phone,
-			"name":       admin.Name,
-			"created_at": admin.CreatedAt,
-			"role":       admin.Role,
+			"fiduciary_id": fiduciary.ID,
+			"tenant_id":    fiduciary.TenantID,
+			"email":        fiduciary.Email,
+			"phone":        fiduciary.Phone,
+			"name":         fiduciary.Name,
+			"created_at":   fiduciary.CreatedAt,
+			"role":         fiduciary.Role,
 		})
 	}
 }
 
-func AdminRefreshHandler(cfg config.Config, privateKey *rsa.PrivateKey, publicKey *rsa.PublicKey) http.HandlerFunc {
+func FiduciaryRefreshHandler(db *gorm.DB, cfg config.Config, privateKey *rsa.PrivateKey, publicKey *rsa.PublicKey) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("admin_refresh_token")
+		cookie, err := r.Cookie("fiduciary_refresh_token")
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "missing admin refresh token")
+			writeError(w, http.StatusUnauthorized, "missing fiduciary refresh token")
 			return
 		}
-		claims, err := auth.ParseAdminRefreshToken(cookie.Value, publicKey)
+		claims, err := auth.ParseFiduciaryRefreshToken(cookie.Value, publicKey)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid admin refresh token")
+			writeError(w, http.StatusUnauthorized, "invalid fiduciary refresh token")
 			return
 		}
 
-		accessToken, err := auth.GenerateAdminToken(claims.AdminID, claims.TenantID, claims.Role, privateKey, cfg.AdminTokenTTL)
+		// To generate a new token, we need the full fiduciary object.
+		var fiduciary models.FiduciaryUser
+		fiduciaryID, err := uuid.Parse(claims.FiduciaryID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "token generation failed")
+			writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		if err := db.Where("id = ?", fiduciaryID).First(&fiduciary).Error; err != nil {
+			writeError(w, http.StatusUnauthorized, "fiduciary not found")
+			return
+		}
+
+		accessToken, err := auth.GenerateFiduciaryToken(fiduciary, privateKey, cfg.AdminTokenTTL)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -543,10 +393,10 @@ func AdminRefreshHandler(cfg config.Config, privateKey *rsa.PrivateKey, publicKe
 	}
 }
 
-func AdminLogoutHandler() http.HandlerFunc {
+func FiduciaryLogoutHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{
-			Name:     "admin_refresh_token",
+			Name:     "fiduciary_refresh_token",
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
@@ -555,12 +405,12 @@ func AdminLogoutHandler() http.HandlerFunc {
 			MaxAge:   -1,
 		})
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"message": "admin logged out",
+			"message": "fiduciary logged out",
 		})
 	}
 }
 
-func AdminForgotPasswordHandler(db *gorm.DB, emailSender func(to, token string) error) http.HandlerFunc {
+func FiduciaryForgotPasswordHandler(db *gorm.DB, emailSender func(to, token string) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req ForgotPasswordRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -568,23 +418,28 @@ func AdminForgotPasswordHandler(db *gorm.DB, emailSender func(to, token string) 
 			return
 		}
 
-		var admin models.AdminUser
-		if err := db.Where("email = ?", req.Email).First(&admin).Error; err != nil {
-			writeJSON(w, http.StatusOK, map[string]string{"message": "if admin exists, email sent"})
+		var fiduciary models.FiduciaryUser
+		if err := db.Where("email = ?", req.Email).First(&fiduciary).Error; err != nil {
+			// Do not reveal whether the user exists or not.
+			log.Logger.Info().Str("email", req.Email).Msg("Password reset requested for non-existent fiduciary")
+			writeJSON(w, http.StatusOK, map[string]string{"message": "if user exists, an email will be sent"})
 			return
 		}
 
 		resetToken := uuid.New().String()
-		admin.PasswordResetToken = resetToken
-		admin.PasswordResetExpiry = time.Now().Add(30 * time.Minute)
-		db.Save(&admin)
+		resetExpiry := time.Now().Add(30 * time.Minute)
+		fiduciary.PasswordResetToken = resetToken
+		fiduciary.PasswordResetExpiry = resetExpiry
+		db.Save(&fiduciary)
 
-		_ = emailSender(admin.Email, resetToken)
-		writeJSON(w, http.StatusOK, map[string]string{"message": "if admin exists, email sent"})
+		// In a real app, this should be a background job
+		go emailSender(fiduciary.Email, resetToken)
+
+		writeJSON(w, http.StatusOK, map[string]string{"message": "if user exists, an email will be sent"})
 	}
 }
 
-func AdminResetPasswordHandler(db *gorm.DB) http.HandlerFunc {
+func FiduciaryResetPasswordHandler(db *gorm.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req ResetPasswordRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -592,26 +447,27 @@ func AdminResetPasswordHandler(db *gorm.DB) http.HandlerFunc {
 			return
 		}
 
-		var admin models.AdminUser
-		if err := db.Where("password_reset_token = ?", req.Token).First(&admin).Error; err != nil {
+		var fiduciary models.FiduciaryUser
+		if err := db.Where("password_reset_token = ?", req.Token).First(&fiduciary).Error; err != nil {
 			writeError(w, http.StatusBadRequest, "invalid or expired token")
 			return
 		}
-		if admin.PasswordResetExpiry.Before(time.Now()) {
-			writeError(w, http.StatusBadRequest, "token expired")
+
+		if fiduciary.PasswordResetExpiry.IsZero() || fiduciary.PasswordResetToken == "" || fiduciary.PasswordResetExpiry.Before(time.Now()) {
+			writeError(w, http.StatusBadRequest, "invalid or expired token")
 			return
 		}
 
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to set password")
+			writeError(w, http.StatusInternalServerError, "failed to update password")
 			return
 		}
 
-		admin.PasswordHash = string(hash)
-		admin.PasswordResetToken = ""
-		admin.PasswordResetExpiry = time.Time{}
-		db.Save(&admin)
+		fiduciary.PasswordHash = string(hashedPassword)
+		fiduciary.PasswordResetToken = ""
+		fiduciary.PasswordResetExpiry = time.Time{}
+		db.Save(&fiduciary)
 
 		writeJSON(w, http.StatusOK, map[string]string{"message": "password updated"})
 	}

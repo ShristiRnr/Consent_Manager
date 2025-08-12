@@ -4,14 +4,13 @@ package middlewares
 import (
 	jwtAuth "consultrnr/consent-manager/internal/auth"
 	"consultrnr/consent-manager/internal/contextkeys"
-	"consultrnr/consent-manager/internal/models"
 	"context"
 	"crypto/rsa"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/golang-jwt/jwt/v4"
 )
@@ -21,8 +20,22 @@ type tenantIDKeyType struct{}
 
 var tenantIDKey tenantIDKeyType
 
-// JWTAuthMiddleware validates the JWT and injects AdminClaims into request.Context.
-func JWTAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
+func extractBearerToken(r *http.Request) (string, error) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return "", fmt.Errorf("authorization header required")
+	}
+
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+		return "", fmt.Errorf("invalid authorization header format")
+	}
+
+	return parts[1], nil
+}
+
+// JWTFiduciaryAuthMiddleware validates the JWT and injects FiduciaryClaims into request.Context.
+func JWTFiduciaryAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, err := extractBearerToken(r)
@@ -31,11 +44,7 @@ func JWTAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
 				return
 			}
 
-			claims := GetAdminAuthClaims(r.Context())
-			if claims == nil {
-				// Parse the token with claims
-				claims = &jwtAuth.AdminClaims{}
-			}
+			claims := &jwtAuth.FiduciaryClaims{}
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 				if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
@@ -47,14 +56,12 @@ func JWTAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
 				return
 			}
 
-			// You can add more validation here if needed
-			if claims.AdminID == "" || claims.TenantID == "" || claims.Role == "" {
+			if claims.FiduciaryID == "" || claims.TenantID == "" || claims.Role == "" {
 				http.Error(w, "missing essential claims", http.StatusUnauthorized)
 				return
 			}
 
-			// Add to context with custom key types
-			ctx := context.WithValue(r.Context(), contextkeys.AdminClaimsKey, claims)
+			ctx := context.WithValue(r.Context(), contextkeys.FiduciaryClaimsKey, claims)
 			ctx = context.WithValue(ctx, tenantIDKey, claims.TenantID)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -62,7 +69,7 @@ func JWTAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
 	}
 }
 
-func JWTUserAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
+func JWTDataPrincipalAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, err := extractBearerToken(r)
@@ -71,73 +78,27 @@ func JWTUserAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handle
 				return
 			}
 
-			token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			claims := &jwtAuth.DataPrincipalClaims{}
+			token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 				if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 				}
 				return pubKey, nil
 			})
+
 			if err != nil || !token.Valid {
 				http.Error(w, "invalid token", http.StatusUnauthorized)
 				return
 			}
 
-			claimsMap, ok := token.Claims.(jwt.MapClaims)
-			if !ok {
-				http.Error(w, "invalid claims", http.StatusUnauthorized)
-				return
-			}
-
-			// Extract values
-			userID := fmt.Sprintf("%v", claimsMap["userId"])
-			email := fmt.Sprintf("%v", claimsMap["email"])
-			phone := fmt.Sprintf("%v", claimsMap["phone"])
-			tokenType := fmt.Sprintf("%v", claimsMap["typ"])
-
-			// tenants can be missing, null, empty, or an array
-			tenantStrs := []string{}
-			if tenants, exists := claimsMap["tenants"]; exists && tenants != nil {
-				if arr, ok := tenants.([]interface{}); ok {
-					for _, t := range arr {
-						tenantStrs = append(tenantStrs, fmt.Sprintf("%v", t))
-					}
-				}
-			}
-
-			if userID == "" {
+			if claims.PrincipalID == "" {
 				http.Error(w, "missing essential claims", http.StatusUnauthorized)
 				return
 			}
 
-			// parse the "user" claim into auth.MasterUser
-			var user models.MasterUser
-			if m, ok := claimsMap["user"].(map[string]interface{}); ok {
-				b, err := json.Marshal(m)
-				if err != nil {
-					http.Error(w, "invalid user claim", http.StatusUnauthorized)
-					return
-				}
-				if err := json.Unmarshal(b, &user); err != nil {
-					http.Error(w, "invalid user claim", http.StatusUnauthorized)
-					return
-				}
-			} else {
-				http.Error(w, "invalid user claim", http.StatusUnauthorized)
-				return
-			}
-
-			uc := &jwtAuth.UserClaims{
-				UserID:    userID,
-				Email:     email,
-				User:      user,
-				Phone:     phone,
-				Tenants:   tenantStrs,
-				TokenType: tokenType,
-			}
-
-			ctx := context.WithValue(r.Context(), contextkeys.UserClaimsKey, uc)
-			if len(tenantStrs) > 0 {
-				ctx = context.WithValue(ctx, tenantIDKey, tenantStrs[0])
+			ctx := context.WithValue(r.Context(), contextkeys.UserClaimsKey, claims)
+			if claims.TenantID != "" {
+				ctx = context.WithValue(ctx, tenantIDKey, claims.TenantID)
 			}
 
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -145,11 +106,11 @@ func JWTUserAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handle
 	}
 }
 
-// GetAuthClaims retrieves the AuthClaims previously set in context.
-func GetAuthClaims(r *http.Request) *jwtAuth.UserClaims {
+// GetAuthClaims retrieves the DataPrincipalClaims previously set in context.
+func GetAuthClaims(r *http.Request) *jwtAuth.DataPrincipalClaims {
 	v := r.Context().Value(contextkeys.UserClaimsKey)
 	if v != nil {
-		if ac, ok := v.(*jwtAuth.UserClaims); ok {
+		if ac, ok := v.(*jwtAuth.DataPrincipalClaims); ok {
 			return ac
 		}
 	}
@@ -157,24 +118,24 @@ func GetAuthClaims(r *http.Request) *jwtAuth.UserClaims {
 	return nil
 }
 
-// GetClaimsFromContext retrieves the UserClaims from the request context.
-func GetClaimsFromContext(ctx context.Context) *jwtAuth.UserClaims {
+// GetClaimsFromContext retrieves the DataPrincipalClaims from the request context.
+func GetClaimsFromContext(ctx context.Context) *jwtAuth.DataPrincipalClaims {
 	if v := ctx.Value(contextkeys.UserClaimsKey); v != nil {
-		if ac, ok := v.(*jwtAuth.UserClaims); ok {
+		if ac, ok := v.(*jwtAuth.DataPrincipalClaims); ok {
 			return ac
 		}
 	}
 	return nil
 }
 
-func GetAdminAuthClaims(ctx context.Context) *jwtAuth.AdminClaims {
-	v := ctx.Value(contextkeys.AdminClaimsKey)
+func GetFiduciaryAuthClaims(ctx context.Context) *jwtAuth.FiduciaryClaims {
+	v := ctx.Value(contextkeys.FiduciaryClaimsKey)
 	if v != nil {
-		if ac, ok := v.(*jwtAuth.AdminClaims); ok {
+		if ac, ok := v.(*jwtAuth.FiduciaryClaims); ok {
 			return ac
 		}
 	}
-	log.Printf("[JWT DEBUG] SET PTR: %s TYPE: %T VAL: %v", contextkeys.AdminClaimsKey, contextkeys.AdminClaimsKey, contextkeys.AdminClaimsKey)
+	log.Printf("[JWT DEBUG] Fiduciary claims not found in context")
 	return nil
 }
 
@@ -183,7 +144,7 @@ func RequireRoles(allowedRoles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-			claims := GetAdminAuthClaims(r.Context())
+			claims := GetFiduciaryAuthClaims(r.Context())
 			log.Printf("[JWT DEBUG] RequireRoles: got claims from context: %+v", claims)
 
 			if claims == nil {
@@ -217,4 +178,3 @@ func GetPrivateKeyFromFile(path string) (*rsa.PrivateKey, error) {
 	}
 	return jwt.ParseRSAPrivateKeyFromPEM(privBytes)
 }
-

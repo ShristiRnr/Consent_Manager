@@ -12,29 +12,28 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 )
 
-type UserClaims struct {
-	UserID    string            `json:"userId"`
-	User      models.MasterUser `json:"user"`
-	Email     string            `json:"email"`
-	Phone     string            `json:"phone"`
-	Tenants   []string          `json:"tenants"`
-	TokenType string            `json:"typ"`
+type DataPrincipalClaims struct {
+	PrincipalID string `json:"principalId"`
+	TenantID    string `json:"tenantId"`
+	Email       string `json:"email"`
+	Phone       string `json:"phone"`
+	TokenType   string `json:"typ"`
 	jwt.RegisteredClaims
 }
 
-type AdminClaims struct {
-	AdminID   string `json:"adminId"`
-	TenantID  string `json:"tenantId"`
-	Role      string `json:"role"`
-	TokenType string `json:"typ"`
+type FiduciaryClaims struct {
+	FiduciaryID string `json:"fiduciaryId"`
+	TenantID    string `json:"tenantId"`
+	Role        string `json:"role"`
+	Type        string `json:"typ"`
 	jwt.RegisteredClaims
 }
 
-func (uc *UserClaims) Valid() error {
-	return uc.RegisteredClaims.Valid()
+func (c *DataPrincipalClaims) Valid() error {
+	return c.RegisteredClaims.Valid()
 }
 
-func (c *AdminClaims) Validate(ctx context.Context) error {
+func (c *FiduciaryClaims) Validate(ctx context.Context) error {
 	return c.RegisteredClaims.Valid()
 }
 
@@ -58,15 +57,13 @@ func LoadPublicKey(path string) (*rsa.PublicKey, error) {
 
 // ========== Token Generators ==========
 
-// Includes full user struct so permissions & role are inside JWT
-func GenerateUserToken(user models.MasterUser, tenants []string, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
-	claims := &UserClaims{
-		UserID:    user.UserID.String(),
-		Email:     user.Email,
-		Phone:     user.Phone,
-		Tenants:   tenants,
-		TokenType: "access",
-		User:      user,
+func GenerateDataPrincipalToken(user models.DataPrincipal, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
+	claims := &DataPrincipalClaims{
+		PrincipalID: user.ID.String(),
+		TenantID:    user.TenantID.String(),
+		Email:       user.Email,
+		Phone:       user.Phone,
+		TokenType:   "access",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -76,14 +73,13 @@ func GenerateUserToken(user models.MasterUser, tenants []string, privateKey *rsa
 	return token.SignedString(privateKey)
 }
 
-func GenerateUserRefreshToken(user models.MasterUser, tenants []string, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
-	claims := &UserClaims{
-		UserID:    user.UserID.String(),
-		Email:     user.Email,
-		Phone:     user.Phone,
-		Tenants:   tenants,
-		TokenType: "refresh",
-		User:      user,
+func GenerateDataPrincipalRefreshToken(user models.DataPrincipal, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
+	claims := &DataPrincipalClaims{
+		PrincipalID: user.ID.String(),
+		TenantID:    user.TenantID.String(),
+		Email:       user.Email,
+		Phone:       user.Phone,
+		TokenType:   "refresh",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -93,12 +89,12 @@ func GenerateUserRefreshToken(user models.MasterUser, tenants []string, privateK
 	return token.SignedString(privateKey)
 }
 
-func GenerateAdminToken(adminID, tenantID, role string, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
-	claims := &AdminClaims{
-		AdminID:   adminID,
-		TenantID:  tenantID,
-		Role:      role,
-		TokenType: "access",
+func GenerateFiduciaryToken(user models.FiduciaryUser, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
+	claims := &FiduciaryClaims{
+		FiduciaryID: user.ID.String(),
+		TenantID:    user.TenantID.String(),
+		Role:        user.Role,
+		Type:        "access",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -108,12 +104,12 @@ func GenerateAdminToken(adminID, tenantID, role string, privateKey *rsa.PrivateK
 	return token.SignedString(privateKey)
 }
 
-func GenerateAdminRefreshToken(adminID, tenantID, role string, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
-	claims := &AdminClaims{
-		AdminID:   adminID,
-		TenantID:  tenantID,
-		Role:      role,
-		TokenType: "refresh",
+func GenerateFiduciaryRefreshToken(user models.FiduciaryUser, privateKey *rsa.PrivateKey, ttl time.Duration) (string, error) {
+	claims := &FiduciaryClaims{
+		FiduciaryID: user.ID.String(),
+		TenantID:    user.TenantID.String(),
+		Role:        user.Role,
+		Type:        "refresh",
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -125,16 +121,16 @@ func GenerateAdminRefreshToken(adminID, tenantID, role string, privateKey *rsa.P
 
 // ========== Token Parsers ==========
 
-func ParseAdminToken(tokenStr string, publicKey *rsa.PublicKey) (*AdminClaims, error) {
-	return parseAdminTokenTyped(tokenStr, publicKey, "access")
+func ParseFiduciaryToken(tokenStr string, publicKey *rsa.PublicKey) (*FiduciaryClaims, error) {
+	return parseFiduciaryTokenTyped(tokenStr, publicKey, "access")
 }
 
-func ParseAdminRefreshToken(tokenStr string, publicKey *rsa.PublicKey) (*AdminClaims, error) {
-	return parseAdminTokenTyped(tokenStr, publicKey, "refresh")
+func ParseFiduciaryRefreshToken(tokenStr string, publicKey *rsa.PublicKey) (*FiduciaryClaims, error) {
+	return parseFiduciaryTokenTyped(tokenStr, publicKey, "refresh")
 }
 
-func parseAdminTokenTyped(tokenStr string, publicKey *rsa.PublicKey, wantType string) (*AdminClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &AdminClaims{}, func(t *jwt.Token) (interface{}, error) {
+func parseFiduciaryTokenTyped(tokenStr string, publicKey *rsa.PublicKey, wantType string) (*FiduciaryClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &FiduciaryClaims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, errors.New("unexpected signing method")
 		}
@@ -144,21 +140,21 @@ func parseAdminTokenTyped(tokenStr string, publicKey *rsa.PublicKey, wantType st
 		return nil, err
 	}
 
-	claims, ok := token.Claims.(*AdminClaims)
+	claims, ok := token.Claims.(*FiduciaryClaims)
 	if !ok || !token.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
 	if claims.ExpiresAt != nil && time.Now().After(claims.ExpiresAt.Time) {
 		return nil, jwt.ErrTokenExpired
 	}
-	if claims.TokenType != wantType {
+	if claims.Type != wantType {
 		return nil, errors.New("token type mismatch")
 	}
 	return claims, nil
 }
 
-func ParseUserToken(tokenStr string, publicKey *rsa.PublicKey) (*UserClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &UserClaims{}, func(t *jwt.Token) (interface{}, error) {
+func ParseDataPrincipalToken(tokenStr string, publicKey *rsa.PublicKey) (*DataPrincipalClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &DataPrincipalClaims{}, func(t *jwt.Token) (interface{}, error) {
 		if t.Method.Alg() != jwt.SigningMethodRS256.Alg() {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
@@ -167,7 +163,7 @@ func ParseUserToken(tokenStr string, publicKey *rsa.PublicKey) (*UserClaims, err
 	if err != nil {
 		return nil, err
 	}
-	claims, ok := token.Claims.(*UserClaims)
+	claims, ok := token.Claims.(*DataPrincipalClaims)
 	if !ok || !token.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
@@ -180,8 +176,8 @@ func ParseUserToken(tokenStr string, publicKey *rsa.PublicKey) (*UserClaims, err
 	return claims, nil
 }
 
-func ParseUserRefreshToken(tokenStr string, publicKey *rsa.PublicKey) (*UserClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &UserClaims{}, func(t *jwt.Token) (interface{}, error) {
+func ParseDataPrincipalRefreshToken(tokenStr string, publicKey *rsa.PublicKey) (*DataPrincipalClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &DataPrincipalClaims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, errors.New("unexpected signing method")
 		}
@@ -190,7 +186,7 @@ func ParseUserRefreshToken(tokenStr string, publicKey *rsa.PublicKey) (*UserClai
 	if err != nil {
 		return nil, err
 	}
-	claims, ok := token.Claims.(*UserClaims)
+	claims, ok := token.Claims.(*DataPrincipalClaims)
 	if !ok || !token.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}

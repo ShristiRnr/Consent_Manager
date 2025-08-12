@@ -4,28 +4,27 @@ import (
 	"consultrnr/consent-manager/internal/auth"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/db"
+	"consultrnr/consent-manager/internal/middlewares"
 	"consultrnr/consent-manager/internal/models"
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 	"time"
-
-	"gorm.io/gorm"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/lib/pq"
+	"gorm.io/gorm"
 )
 
 type CreatePurposeRequest struct {
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	DataObjects  pq.StringArray `json:"data_objects"` 
-	ReviewCycleMonths int `json:"review_cycle_months"`
-	Vendors      []string `json:"vendors"`
-	IsThirdParty bool     `json:"is_third_party"`
-	Required     bool     `json:"required"`
+	Name              string         `json:"name"`
+	Description       string         `json:"description"`
+	DataObjects       pq.StringArray `json:"data_objects"`
+	ReviewCycleMonths int            `json:"review_cycle_months"`
+	Vendors           []string       `json:"vendors"`
+	IsThirdParty      bool           `json:"is_third_party"`
+	Required          bool           `json:"required"`
 }
 
 // PurposeHandler handles purpose-related requests
@@ -41,70 +40,64 @@ func NewPurposeHandler(db *gorm.DB) *PurposeHandler {
 
 func CreatePurposeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims := r.Context().Value(contextkeys.AdminClaimsKey)
+		claims := middlewares.GetFiduciaryAuthClaims(r.Context())
 		if claims == nil {
-			http.Error(w, "unauthorized: no claims", http.StatusUnauthorized)
+			writeError(w, http.StatusForbidden, "fiduciary access required")
 			return
 		}
-		adminClaims, ok := claims.(*auth.AdminClaims)
-		if !ok {
-			http.Error(w, "unauthorized: bad claims", http.StatusUnauthorized)
-			return
-		}
-		tenantID := adminClaims.TenantID
+		tenantID := claims.TenantID
 		// Now, get your tenant db etc using tenantID
 		schema := "tenant_" + tenantID[:8]
 		dbConn, err := db.GetTenantDB(schema)
 		if err != nil || dbConn == nil {
-			http.Error(w, "tenant db not found", http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "tenant db not found")
 			return
 		}
 
 		var req CreatePurposeRequest
 		// IsThirdParty is optional, default to false
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid payload", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid payload")
 			return
 		}
 		if req.Name == "" {
-			http.Error(w, "name is required", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "name is required")
 			return
 		}
 		if req.Description == "" {
-			http.Error(w, "description is required", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "description is required")
 			return
 		}
 
 		//if IsThirdParty is true then vendors must be provided
 		if req.IsThirdParty && len(req.Vendors) == 0 {
-			http.Error(w, "vendors are required for third-party purposes", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "vendors are required for third-party purposes")
 			return
 		}
 
 		// if IsThirdParty is false then vendors must be empty
 		if !req.IsThirdParty && len(req.Vendors) > 0 {
-			http.Error(w, "vendors must be empty for non-third-party purposes", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "vendors must be empty for non-third-party purposes")
 			return
 		}
 
 		purpose := &models.Purpose{
-			ID:           uuid.New(),
-			Name:         req.Name,
-			Description:  req.Description,
-			Vendors:      req.Vendors,
-			// DataObjects:  req.DataObjects,
+			ID:                uuid.New(),
+			Name:              req.Name,
+			Description:       req.Description,
+			Vendors:           req.Vendors,
 			ReviewCycleMonths: req.ReviewCycleMonths,
-			IsThirdParty: req.IsThirdParty,
-			Required:     req.Required,
-			Active:       true,
-			TenantID:     uuid.MustParse(tenantID),
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			IsThirdParty:      req.IsThirdParty,
+			Required:          req.Required,
+			Active:            true,
+			TenantID:          uuid.MustParse(tenantID),
+			CreatedAt:         time.Now(),
+			UpdatedAt:         time.Now(),
 		}
 
 		if err := dbConn.Create(purpose).Error; err != nil {
 			log.Printf("[ERROR] Failed to create purpose: %v", err)
-			http.Error(w, "failed to create purpose", http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "failed to create purpose")
 			return
 		}
 
@@ -114,22 +107,17 @@ func CreatePurposeHandler() http.HandlerFunc {
 }
 
 func (h *PurposeHandler) ToggleActive(w http.ResponseWriter, r *http.Request) {
-	claims := r.Context().Value(contextkeys.AdminClaimsKey)
+	claims := middlewares.GetFiduciaryAuthClaims(r.Context())
 	if claims == nil {
-		http.Error(w, "unauthorized: no claims", http.StatusUnauthorized)
+		writeError(w, http.StatusForbidden, "fiduciary access required")
 		return
 	}
-	adminClaims, ok := claims.(*auth.AdminClaims)
-	if !ok {
-		http.Error(w, "unauthorized: bad claims", http.StatusUnauthorized)
-		return
-	}
-	tenantID := adminClaims.TenantID
+	tenantID := claims.TenantID
 	// Now, get your tenant db etc using tenantID
 	schema := "tenant_" + tenantID[:8]
 	dbConn, err := db.GetTenantDB(schema)
 	if err != nil || dbConn == nil {
-		http.Error(w, "tenant db not found", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "tenant db not found")
 		return
 	}
 	idStr := mux.Vars(r)["id"]
@@ -137,57 +125,53 @@ func (h *PurposeHandler) ToggleActive(w http.ResponseWriter, r *http.Request) {
 		Active bool `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
-		return
-	}
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
 
 	var purpose models.Purpose
-	if err := h.DB.First(&purpose, "id = ?", id).Error; err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+	if err := dbConn.First(&purpose, "id = ?", idStr).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			writeError(w, http.StatusNotFound, "purpose not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "database error")
+		}
 		return
 	}
 
 	purpose.Active = payload.Active
-	if err := h.DB.Save(&purpose).Error; err != nil {
-		http.Error(w, "failed to update", http.StatusInternalServerError)
+	if err := dbConn.Save(&purpose).Error; err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update purpose")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
+
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(purpose)
 }
 
 func ListPurposesHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims := r.Context().Value(contextkeys.AdminClaimsKey)
+		claims := middlewares.GetFiduciaryAuthClaims(r.Context())
 		if claims == nil {
-			http.Error(w, "unauthorized: no claims", http.StatusUnauthorized)
+			writeError(w, http.StatusForbidden, "fiduciary access required")
 			return
 		}
-		adminClaims, ok := claims.(*auth.AdminClaims)
-		if !ok {
-			http.Error(w, "unauthorized: bad claims", http.StatusUnauthorized)
-			return
-		}
-		tenantID := adminClaims.TenantID
+		tenantID := claims.TenantID
 		// Now, get your tenant db etc using tenantID
 		schema := "tenant_" + tenantID[:8]
 		dbConn, err := db.GetTenantDB(schema)
 		if err != nil || dbConn == nil {
-			http.Error(w, "tenant db not found", http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "tenant db not found")
 			return
 		}
-		// The rest as you already have...
+
 		var purposes []models.Purpose
-		if err := dbConn.Where("tenant_id = ?", tenantID).Find(&purposes).Error; err != nil {
-			log.Printf("[ERROR] Failed to fetch purposes: %v", err)
-			http.Error(w, "failed to fetch purposes", http.StatusInternalServerError)
+		if err := dbConn.Find(&purposes).Error; err != nil {
+			log.Printf("[ERROR] Failed to list purposes: %v", err)
+			writeError(w, http.StatusInternalServerError, "failed to list purposes")
 			return
 		}
+
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(purposes)
 	}
@@ -196,42 +180,23 @@ func ListPurposesHandler() http.HandlerFunc {
 // Get /api/v1/user/purposes/{id}
 func UserGetPurposeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1) auth header
-		userHeader := r.Header.Get("Authorization")
-		if userHeader == "" {
-			writeErr(w, http.StatusUnauthorized, "missing Authorization header")
-			return
-		}
-		parts := strings.SplitN(userHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			writeErr(w, http.StatusUnauthorized, "invalid Authorization header format")
-			return
-		}
-
-		// 2) parse user token
-		parsedToken, err := auth.ParseUserToken(parts[1], publicKey)
-		if err != nil {
-			log.Printf("error parsing user token: %v", err)
-			writeErr(w, http.StatusUnauthorized, "invalid or expired token")
-			return
-		}
-		uid, err := uuid.Parse(parsedToken.UserID)
-		if err != nil || uid == uuid.Nil {
-			log.Printf("error parsing user ID: %v", err)
-			writeErr(w, http.StatusUnauthorized, "unauthorized - invalid user ID")
+		claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+		if !ok {
+			writeError(w, http.StatusForbidden, "user access required")
 			return
 		}
 
 		// 3) tenant lookup
-		tid, err := GetUserTenantLink(userHeader)
+		tid, err := uuid.Parse(claims.TenantID)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "failed to fetch tenant link")
+			writeError(w, http.StatusBadRequest, "invalid tenant id in claims")
 			return
 		}
+
 		schema := "tenant_" + tid.String()[:8]
 		tenantDB, err := db.GetTenantDB(schema)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "tenant DB not found")
+			writeError(w, http.StatusInternalServerError, "tenant DB not found")
 			return
 		}
 
@@ -240,7 +205,7 @@ func UserGetPurposeHandler() http.HandlerFunc {
 		idStr := vars["id"]
 		id, err := uuid.Parse(idStr)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid purpose ID")
+			writeError(w, http.StatusBadRequest, "invalid purpose ID")
 			return
 		}
 
@@ -251,10 +216,10 @@ func UserGetPurposeHandler() http.HandlerFunc {
 			First(&purpose).
 			Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
-				writeErr(w, http.StatusNotFound, "purpose not found")
+				writeError(w, http.StatusNotFound, "purpose not found")
 			} else {
 				log.Printf("[ERROR] failed to fetch purpose: %v", err)
-				writeErr(w, http.StatusInternalServerError, "failed to fetch purpose")
+				writeError(w, http.StatusInternalServerError, "failed to fetch purpose")
 			}
 			return
 		}
@@ -268,29 +233,9 @@ func UserGetPurposeHandler() http.HandlerFunc {
 // GET /api/v1/user/purposes/{tenantID}
 func UserGetPurposeByTenant() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 1) auth header
-		userHeader := r.Header.Get("Authorization")
-		if userHeader == "" {
-			writeErr(w, http.StatusUnauthorized, "missing Authorization header")
-			return
-		}
-		parts := strings.SplitN(userHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			writeErr(w, http.StatusUnauthorized, "invalid Authorization header format")
-			return
-		}
-
-		// 2) parse user token
-		parsedToken, err := auth.ParseUserToken(parts[1], publicKey)
-		if err != nil {
-			log.Printf("error parsing user token: %v", err)
-			writeErr(w, http.StatusUnauthorized, "invalid or expired token")
-			return
-		}
-		uid, err := uuid.Parse(parsedToken.UserID)
-		if err != nil || uid == uuid.Nil {
-			log.Printf("error parsing user ID: %v", err)
-			writeErr(w, http.StatusUnauthorized, "unauthorized - invalid user ID")
+		claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+		if !ok {
+			writeError(w, http.StatusForbidden, "user access required")
 			return
 		}
 
@@ -298,7 +243,13 @@ func UserGetPurposeByTenant() http.HandlerFunc {
 		idStr := vars["tenantID"]
 		id, err := uuid.Parse(idStr)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid tenant ID")
+			writeError(w, http.StatusBadRequest, "invalid tenant ID")
+			return
+		}
+
+		// Authorize: ensure the user is accessing their own tenant's data
+		if claims.TenantID != idStr {
+			writeError(w, http.StatusForbidden, "you are not authorized to access this tenant's data")
 			return
 		}
 
@@ -306,7 +257,7 @@ func UserGetPurposeByTenant() http.HandlerFunc {
 		schema := "tenant_" + id.String()[:8]
 		tenantDB, err := db.GetTenantDB(schema)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "tenant DB not found")
+			writeError(w, http.StatusInternalServerError, "tenant DB not found")
 			return
 		}
 		// 4) fetch purposes for this tenant and user
@@ -315,11 +266,11 @@ func UserGetPurposeByTenant() http.HandlerFunc {
 			Where("tenant_id = ? AND active = true", id).
 			Find(&purposes).Error; err != nil {
 			log.Printf("[ERROR] failed to fetch purposes: %v", err)
-			writeErr(w, http.StatusInternalServerError, "failed to fetch purposes")
+			writeError(w, http.StatusInternalServerError, "failed to fetch purposes")
 			return
 		}
 		if len(purposes) == 0 {
-			writeErr(w, http.StatusNotFound, "no purposes found for this tenant")
+			writeError(w, http.StatusNotFound, "no purposes found for this tenant")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -334,34 +285,29 @@ func UserGetPurposeByTenant() http.HandlerFunc {
 
 func DeletePurposeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims := r.Context().Value(contextkeys.AdminClaimsKey)
+		claims := middlewares.GetFiduciaryAuthClaims(r.Context())
 		if claims == nil {
-			http.Error(w, "unauthorized: no claims", http.StatusUnauthorized)
+			writeError(w, http.StatusForbidden, "fiduciary access required")
 			return
 		}
-		adminClaims, ok := claims.(*auth.AdminClaims)
-		if !ok {
-			http.Error(w, "unauthorized: bad claims", http.StatusUnauthorized)
-			return
-		}
-		tenantID := adminClaims.TenantID
+		tenantID := claims.TenantID
 		// Now, get your tenant db etc using tenantID
 		schema := "tenant_" + tenantID[:8]
 		dbConn, err := db.GetTenantDB(schema)
 		if err != nil || dbConn == nil {
-			http.Error(w, "tenant db not found", http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "tenant db not found")
 			return
 		}
 
 		purposeID := r.URL.Query().Get("id")
 		if purposeID == "" {
-			http.Error(w, "missing purpose ID", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "missing purpose ID")
 			return
 		}
 
 		if err := dbConn.Where("id = ? AND tenant_id = ?", purposeID, tenantID).Delete(&models.Purpose{}).Error; err != nil {
 			log.Printf("[ERROR] Failed to delete purpose: %v", err)
-			http.Error(w, "failed to delete purpose", http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "failed to delete purpose")
 			return
 		}
 
@@ -371,34 +317,29 @@ func DeletePurposeHandler() http.HandlerFunc {
 
 func UpdatePurposeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims := r.Context().Value(contextkeys.AdminClaimsKey)
+		claims := middlewares.GetFiduciaryAuthClaims(r.Context())
 		if claims == nil {
-			http.Error(w, "unauthorized: no claims", http.StatusUnauthorized)
+			writeError(w, http.StatusForbidden, "fiduciary access required")
 			return
 		}
-		adminClaims, ok := claims.(*auth.AdminClaims)
-		if !ok {
-			http.Error(w, "unauthorized: bad claims", http.StatusUnauthorized)
-			return
-		}
-		tenantID := adminClaims.TenantID
+		tenantID := claims.TenantID
 		// Now, get your tenant db etc using tenantID
 		schema := "tenant_" + tenantID[:8]
 		dbConn, err := db.GetTenantDB(schema)
 		if err != nil || dbConn == nil {
-			http.Error(w, "tenant db not found", http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "tenant db not found")
 			return
 		}
 
 		var req CreatePurposeRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid payload", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "invalid payload")
 			return
 		}
 
 		purposeID := r.URL.Query().Get("id")
 		if purposeID == "" {
-			http.Error(w, "missing purpose ID", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "missing purpose ID")
 			return
 		}
 
@@ -413,7 +354,7 @@ func UpdatePurposeHandler() http.HandlerFunc {
 
 		if err := dbConn.Model(&models.Purpose{}).Where("id = ? AND tenant_id = ?", purpose.ID, tenantID).Updates(purpose).Error; err != nil {
 			log.Printf("[ERROR] Failed to update purpose: %v", err)
-			http.Error(w, "failed to update purpose", http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, "failed to update purpose")
 			return
 		}
 

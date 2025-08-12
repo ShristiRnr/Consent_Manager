@@ -10,17 +10,19 @@ import (
 )
 
 type Purpose struct {
-	Name      string `json:"name"`
-	Consented bool   `json:"consented"`
-	Version   string `json:"version,omitempty"`
-	Language  string `json:"language,omitempty"`
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Consented bool      `json:"consented"`
+	Version   string    `json:"version,omitempty"`
+	Language  string    `json:"language,omitempty"`
 }
 
 type ConsentPurpose struct {
-	ID          uuid.UUID `json:"id"`
-	Name        string    `json:"name"`
-	Status      bool      `json:"status"` // e.g., "active", "withdrawn"
-	Description string    `json:"description"`
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Status      bool       `json:"status"` // e.g., "active", "withdrawn"
+	Description string     `json:"description"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
 }
 
 type ConsentPurposes struct {
@@ -95,7 +97,7 @@ type CreateGrievanceCommentRequest struct {
 	UserID      string `json:"userId" binding:"required,uuid"`
 	AdminID     string `json:"adminId,omitempty" binding:"omitempty,uuid"`
 	Comment     string `json:"comment" binding:"required"`
-} 
+}
 
 type ReviewPageData struct {
 	UID      string           `json:"uid"`
@@ -124,4 +126,103 @@ type CreateDSRRequest struct {
 	UserID   string `json:"userId" binding:"required,uuid"`
 	TenantID string `json:"tenantId" binding:"required,uuid"`
 	Type     string `json:"type" binding:"required,oneof=access delete rectify port restrict object"`
+}
+
+// Consent Form DTOs
+type CreateConsentFormRequest struct {
+	Name                    string `json:"name" binding:"required"`
+	Title                   string `json:"title" binding:"required"`
+	Description             string `json:"description"`
+	DataCollectionAndUsage  string `json:"dataCollectionAndUsage"`
+	DataSharingAndTransfers string `json:"dataSharingAndTransfers"`
+	DataRetentionPeriod     string `json:"dataRetentionPeriod"`
+	UserRightsSummary       string `json:"userRightsSummary"`
+	TermsAndConditions      string `json:"termsAndConditions"`
+	PrivacyPolicy           string `json:"privacyPolicy"`
+}
+
+type UpdateConsentFormRequest struct {
+	Name                    string `json:"name"`
+	Title                   string `json:"title"`
+	Description             string `json:"description"`
+	DataCollectionAndUsage  string `json:"dataCollectionAndUsage"`
+	DataSharingAndTransfers string `json:"dataSharingAndTransfers"`
+	DataRetentionPeriod     string `json:"dataRetentionPeriod"`
+	UserRightsSummary       string `json:"userRightsSummary"`
+	TermsAndConditions      string `json:"termsAndConditions"`
+	PrivacyPolicy           string `json:"privacyPolicy"`
+}
+
+type AddPurposeToConsentFormRequest struct {
+	PurposeID    string   `json:"purposeId" binding:"required,uuid"`
+	DataObjects  []string `json:"dataObjects"`
+	VendorIDs    []string `json:"vendorIds"`
+	ExpiryInDays int      `json:"expiryInDays"`
+}
+
+type UpdatePurposeInConsentFormRequest struct {
+	DataObjects  []string `json:"dataObjects"`
+	VendorIDs    []string `json:"vendorIds"`
+	ExpiryInDays int      `json:"expiryInDays"`
+}
+
+type ConsentFormPurposeResponse struct {
+	PurposeID    string   `json:"purposeId"`
+	PurposeName  string   `json:"purposeName"`
+	DataObjects  []string `json:"dataObjects"`
+	VendorIDs    []string `json:"vendorIds"`
+	ExpiryInDays int      `json:"expiryInDays"`
+}
+
+type ConsentFormResponse struct {
+	ID                      string                       `json:"id"`
+	Name                    string                       `json:"name"`
+	Title                   string                       `json:"title"`
+	Description             string                       `json:"description"`
+	DataCollectionAndUsage  string                       `json:"dataCollectionAndUsage"`
+	DataSharingAndTransfers string                       `json:"dataSharingAndTransfers"`
+	DataRetentionPeriod     string                       `json:"dataRetentionPeriod"`
+	UserRightsSummary       string                       `json:"userRightsSummary"`
+	TermsAndConditions      string                       `json:"termsAndConditions"`
+	PrivacyPolicy           string                       `json:"privacyPolicy"`
+	Purposes                []ConsentFormPurposeResponse `json:"purposes"`
+	CreatedAt               time.Time                    `json:"createdAt"`
+	UpdatedAt               time.Time                    `json:"updatedAt"`
+}
+
+type SubmitConsentRequest struct {
+	Purposes []PurposeConsent `json:"purposes"`
+}
+
+type PurposeConsent struct {
+	PurposeID string `json:"purposeId"`
+	Consented bool   `json:"consented"`
+}
+
+type IntegrationScriptResponse struct {
+	Script string `json:"script"`
+}
+
+// Breach Notification DTOs
+type CreateBreachNotificationRequest struct {
+	Description        string    `json:"description" binding:"required"`
+	BreachDate         time.Time `json:"breachDate" binding:"required"`
+	DetectionDate      time.Time `json:"detectionDate" binding:"required"`
+	AffectedUsersCount int       `json:"affectedUsersCount" binding:"required"`
+	Status             string    `json:"status" binding:"required"`
+}
+
+type BreachNotificationResponse struct {
+	ID                 uuid.UUID  `json:"id"`
+	TenantID           uuid.UUID  `json:"tenantId"`
+	Description        string     `json:"description"`
+	BreachDate         time.Time  `json:"breachDate"`
+	DetectionDate      time.Time  `json:"detectionDate"`
+	AffectedUsersCount int        `json:"affectedUsersCount"`
+	NotifiedUsersCount int        `json:"notifiedUsersCount"`
+	Status             string     `json:"status"`
+	ReportedToDPB      bool       `json:"reportedToDpb"`
+	ReportedToDPBDate  *time.Time `json:"reportedToDpbDate,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
 }

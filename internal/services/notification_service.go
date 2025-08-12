@@ -13,12 +13,15 @@ import (
 )
 
 type NotificationService struct {
-	repo *repository.NotificationRepo
-	hub  *realtime.Hub
+	repo                        *repository.NotificationRepo
+	notificationPreferencesRepo *repository.NotificationPreferencesRepo
+	emailService                *EmailService
+	hub                         *realtime.Hub
+	fiduciaryService            *FiduciaryService
 }
 
-func NewNotificationService(repo *repository.NotificationRepo, hub *realtime.Hub) *NotificationService {
-	return &NotificationService{repo: repo, hub: hub}
+func NewNotificationService(repo *repository.NotificationRepo, notificationPreferencesRepo *repository.NotificationPreferencesRepo, emailService *EmailService, hub *realtime.Hub, fiduciaryService *FiduciaryService) *NotificationService {
+	return &NotificationService{repo: repo, notificationPreferencesRepo: notificationPreferencesRepo, emailService: emailService, hub: hub, fiduciaryService: fiduciaryService}
 }
 
 func (s *NotificationService) Create(ctx context.Context, n *models.Notification) error {
@@ -27,6 +30,49 @@ func (s *NotificationService) Create(ctx context.Context, n *models.Notification
 		return fmt.Errorf("create notification: %w", err)
 	}
 	s.hub.Publish(n.UserID, n)
+
+	// Send email notification
+	preferences, err := s.notificationPreferencesRepo.Get(n.UserID)
+	if err != nil {
+		log.Ctx(ctx).Error().Err(err).Str("user_id", n.UserID.String()).Msg("Failed to get notification preferences")
+		// Don't block notification creation if preferences are not found
+		return nil
+	}
+
+	fiduciary, err := s.fiduciaryService.GetFiduciaryByID(n.UserID)
+	if err != nil {
+		log.Ctx(ctx).Error().Err(err).Str("user_id", n.UserID.String()).Msg("Failed to get fiduciary for email notification")
+		return nil
+	}
+	userEmail := fiduciary.Email
+
+	switch n.Title {
+	case "New Grievance":
+		if preferences.OnNewGrievance {
+			s.emailService.Send(userEmail, n.Title, n.Body)
+		}
+	case "Grievance Update":
+		if preferences.OnGrievanceUpdate {
+			s.emailService.Send(userEmail, n.Title, n.Body)
+		}
+	case "Consent Update":
+		if preferences.OnConsentUpdate {
+			s.emailService.Send(userEmail, n.Title, n.Body)
+		}
+	case "New Consent Request":
+		if preferences.OnNewConsentRequest {
+			s.emailService.Send(userEmail, n.Title, n.Body)
+		}
+	case "Data Subject Request":
+		if preferences.OnDataSubjectRequest {
+			s.emailService.Send(userEmail, n.Title, n.Body)
+		}
+	case "Data Subject Request Update":
+		if preferences.OnDataSubjectRequestUpdate {
+			s.emailService.Send(userEmail, n.Title, n.Body)
+		}
+	}
+
 	return nil
 }
 

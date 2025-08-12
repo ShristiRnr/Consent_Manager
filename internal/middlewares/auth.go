@@ -21,22 +21,8 @@ func writeAuthError(w http.ResponseWriter, status int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// extractBearerToken extracts the token from the Authorization header
-func extractBearerToken(r *http.Request) (string, error) {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return "", errors.New("missing Authorization header")
-	}
-
-	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return "", errors.New("invalid Authorization header format")
-	}
-	return parts[1], nil
-}
-
-// RequireAdminAuth verifies JWT for admin endpoints
-func RequireAdminAuth(publicKey *rsa.PublicKey) func(http.Handler) http.Handler {
+// RequireFiduciaryAuth verifies JWT for fiduciary endpoints
+func RequireFiduciaryAuth(publicKey *rsa.PublicKey) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, err := extractBearerToken(r)
@@ -44,19 +30,19 @@ func RequireAdminAuth(publicKey *rsa.PublicKey) func(http.Handler) http.Handler 
 				writeAuthError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
 				return
 			}
-			claims, err := auth.ParseAdminToken(tokenStr, publicKey)
+			claims, err := auth.ParseFiduciaryToken(tokenStr, publicKey)
 			if err != nil {
 				writeAuthError(w, http.StatusUnauthorized, "Invalid or expired token")
 				return
 			}
-			ctx := context.WithValue(r.Context(), contextkeys.AdminClaimsKey, claims)
+			ctx := context.WithValue(r.Context(), contextkeys.FiduciaryClaimsKey, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// RequireUserAuth verifies JWT for user endpoints
-func RequireUserAuth(publicKey *rsa.PublicKey) func(http.Handler) http.Handler {
+// RequireDataPrincipalAuth verifies JWT for data principal endpoints
+func RequireDataPrincipalAuth(publicKey *rsa.PublicKey) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr, err := extractBearerToken(r)
@@ -64,7 +50,7 @@ func RequireUserAuth(publicKey *rsa.PublicKey) func(http.Handler) http.Handler {
 				writeAuthError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
 				return
 			}
-			claims, err := auth.ParseUserToken(tokenStr, publicKey)
+			claims, err := auth.ParseDataPrincipalToken(tokenStr, publicKey)
 			if err != nil {
 				writeAuthError(w, http.StatusUnauthorized, "Invalid or expired token")
 				return
@@ -75,106 +61,64 @@ func RequireUserAuth(publicKey *rsa.PublicKey) func(http.Handler) http.Handler {
 	}
 }
 
-// RequirePermission enforces role/module-specific permissions
-func RequirePermission(module string) func(http.Handler) http.Handler {
+// RequirePermission enforces role-based permissions for fiduciaries
+func RequirePermission(module string, requiredRoles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+			if !ok || claims == nil {
+				writeAuthError(w, http.StatusUnauthorized, "Unauthorized: no claims found")
+				return
+			}
 
-			// First check admin claims
-			if v := r.Context().Value(contextkeys.AdminClaimsKey); v != nil {
-				if ac, ok := v.(*auth.AdminClaims); ok {
-					if ac.Role == "superadmin" {
-						// SuperAdmin has full access
-						next.ServeHTTP(w, r)
-						return
-					}
-					if ac.Role == "admin" && module == "usermanagement" {
-						writeAuthError(w, http.StatusForbidden, "Admins cannot access user management")
-						return
-					}
+			// Superadmin has all permissions
+			if strings.EqualFold(claims.Role, "superadmin") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Check if the user's role is in the required list
+			for _, role := range requiredRoles {
+				if strings.EqualFold(claims.Role, role) {
 					next.ServeHTTP(w, r)
 					return
 				}
 			}
 
-			// Then check user claims
-			if v := r.Context().Value(contextkeys.UserClaimsKey); v != nil {
-				if uc, ok := v.(*auth.UserClaims); ok {
-					switch uc.User.Role { 
-					case "dpo":
-						switch module {
-						case "consent":
-							if !uc.User.CanManageConsent { 
-								writeAuthError(w, http.StatusForbidden, "Not allowed to manage consent")
-								return
-							}
-						case "grievance":
-							if !uc.User.CanManageGrievance {
-								writeAuthError(w, http.StatusForbidden, "Not allowed to manage grievance")
-								return
-							}
-						case "purposes":
-							if !uc.User.CanManagePurposes {
-								writeAuthError(w, http.StatusForbidden, "Not allowed to manage purposes")
-								return
-							}
-						case "auditlogs":
-							if !uc.User.CanManageAuditLogs {
-								writeAuthError(w, http.StatusForbidden, "Not allowed to manage audit logs")
-								return
-							}
-						}
-					case "developer":
-						if module == "purposes" && r.Method != http.MethodGet {
-							writeAuthError(w, http.StatusForbidden, "Developers have read-only access to purposes")
-							return
-						}
-					case "viewer":
-						if r.Method != http.MethodGet {
-							writeAuthError(w, http.StatusForbidden, "Viewers have read-only access")
-							return
-						}
-					}
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-
-			writeAuthError(w, http.StatusUnauthorized, "Unauthorized")
+			writeAuthError(w, http.StatusForbidden, "Forbidden: insufficient permissions")
 		})
 	}
 }
 
-// GetUserID extracts the user ID from context claims
-func GetUserID(ctx context.Context) string {
+// GetDataPrincipalID extracts the data principal ID from context claims
+func GetDataPrincipalID(ctx context.Context) string {
 	if v := ctx.Value(contextkeys.UserClaimsKey); v != nil {
-		if uc, ok := v.(*auth.UserClaims); ok {
-			return uc.UserID
+		if uc, ok := v.(*auth.DataPrincipalClaims); ok {
+			return uc.PrincipalID
 		}
 	}
 	return ""
 }
 
-// GetUserData fetches the full MasterUser record from DB
-func GetUserData(db *gorm.DB, ctx context.Context) (models.MasterUser, error) {
-	claims, ok := ctx.Value(contextkeys.UserClaimsKey).(*auth.UserClaims)
+// GetDataPrincipal fetches the full DataPrincipal record from DB
+func GetDataPrincipal(db *gorm.DB, ctx context.Context) (*models.DataPrincipal, error) {
+	claims, ok := ctx.Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
 	if !ok || claims == nil {
-		return models.MasterUser{}, errors.New("no claims in context")
+		return nil, errors.New("no claims in context")
 	}
-	var user models.MasterUser
-	if err := db.Where("user_id = ?", claims.UserID).First(&user).Error; err != nil {
-		return models.MasterUser{}, err
+	var user models.DataPrincipal
+	if err := db.Where("id = ?", claims.PrincipalID).First(&user).Error; err != nil {
+		return nil, err
 	}
-	return user, nil
+	return &user, nil
 }
 
-// GetAdminID extracts the admin ID from context claims
-func GetAdminID(ctx context.Context) string {
-	if v := ctx.Value(contextkeys.AdminClaimsKey); v != nil {
-		if ac, ok := v.(*auth.AdminClaims); ok {
-			return ac.AdminID
+// GetFiduciaryID extracts the fiduciary ID from context claims
+func GetFiduciaryID(ctx context.Context) string {
+	if v := ctx.Value(contextkeys.FiduciaryClaimsKey); v != nil {
+		if fc, ok := v.(*auth.FiduciaryClaims); ok {
+			return fc.FiduciaryID
 		}
-		
 	}
 	return ""
 }

@@ -20,5 +20,12 @@ func main() {
 		log.Fatalf("❌ Failed to update tenants: %v", result.Error)
 	}
 
+	err := db.MasterDB.AutoMigrate(&models.ConsentForm{}, &models.ConsentFormPurpose{})
+	if err != nil {
+		log.Fatalf("❌ Failed to migrate database: %v", err)
+	}
+
+	fmt.Println("✅ Database migration successful")
+
 	fmt.Printf("✅ Updated %d tenants to default review frequency of 6 months\n", result.RowsAffected)
 }

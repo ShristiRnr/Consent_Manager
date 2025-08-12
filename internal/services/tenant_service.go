@@ -44,13 +44,11 @@ func CreateTenant(ctx context.Context, db *gorm.DB, name, domain string) (*model
 
 	tenantDB = tenantDB.Exec(fmt.Sprintf("SET search_path TO %s", schema))
 	if err := tenantDB.AutoMigrate(
-		&models.TenantUser{},
+		&models.DataPrincipal{},
+		&models.FiduciaryUser{},
 		&models.Purpose{},
 		&models.Consent{},
 		&models.ConsentHistory{},
-		&models.TenantUser{},
-		&models.AdminUser{},
-		&models.AdminLoginIndex{},
 		&models.DSRRequest{},
 		&models.AuditLog{},
 		&models.Grievance{},

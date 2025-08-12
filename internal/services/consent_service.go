@@ -1,8 +1,10 @@
 package services
 
 import (
+	"consultrnr/consent-manager/config"
 	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/models"
+	"consultrnr/consent-manager/internal/repository"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,14 +13,14 @@ import (
 	"time"
 
 	"consultrnr/consent-manager/internal/dto"
-	"consultrnr/consent-manager/internal/repository"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type ConsentService struct {
-	repo *repository.ConsentRepository
+	repo         *repository.ConsentRepository
+	auditService *AuditService
 }
 
 type ConsentUpdateRequest struct {
@@ -35,8 +37,12 @@ type ConsentReviewSubmission struct {
 	Purposes []dto.Purpose
 }
 
-func NewConsentService(repo *repository.ConsentRepository) *ConsentService {
-	return &ConsentService{repo}
+func NewConsentService(repo *repository.ConsentRepository, auditService *AuditService) *ConsentService {
+	return &ConsentService{repo: repo, auditService: auditService}
+}
+
+func (s *ConsentService) Repo() *repository.ConsentRepository {
+	return s.repo
 }
 
 func (s *ConsentService) SaveConsent(userID uuid.UUID, tenantID uuid.UUID, purposes []dto.Purpose) error {
@@ -73,25 +79,17 @@ func (s *ConsentService) SaveConsent(userID uuid.UUID, tenantID uuid.UUID, purpo
 	}
 	_ = s.repo.DB().Create(&history)
 
-	tenantSchema := "tenant_" + tenantID.String()[:8]
-	tenantDB, err := db.GetTenantDB(tenantSchema)
-	if err != nil {
-		log.Printf("Error getting tenant DB for tenant %s: %v", tenantID, err)
-		return err
+	// Since this action can cover multiple purposes, we create a general audit log.
+	// Specific purpose-level logs are created on granular updates.
+	details := map[string]interface{}{
+		"details":  "User consent saved/updated in bulk.",
+		"purposes": purposes,
 	}
 
-	auditLog := models.AuditLog{
-		LogID:        uuid.New(),
-		UserID:       userID,
-		TenantID:     tenantID,
-		ActionType:   "Upsert Consent",
-		Initiator:    "system",
-		Timestamp:    time.Now(),
-		Jurisdiction: "India",
-	}
-	if err := tenantDB.Create(&auditLog).Error; err != nil {
-		log.Printf("Error creating audit log: %v", err)
-		return err
+	// For a bulk save, a nil PurposeID can be used.
+	if err := s.auditService.Create(context.Background(), userID, tenantID, uuid.Nil, "CONSENT_SAVED", "", userID.String(), "system", "", "", details); err != nil {
+		log.Printf("Error creating audit log for SaveConsent: %v", err)
+		// Non-fatal error, just log it.
 	}
 
 	return nil
@@ -174,7 +172,6 @@ func (s *ConsentService) UpdateConsents(ctx context.Context, userID uuid.UUID, u
 	}
 	return nil
 }
-
 
 // WithdrawConsentByPurpose
 func (s *ConsentService) WithdrawConsentByPurpose(ctx context.Context, userID string, tenantID string, purposeID string, consentID string) error {
@@ -262,131 +259,43 @@ func (s *ConsentService) GetUserConsentInTenant(ctx context.Context, tenantDB *g
 }
 
 // GetUserByID retrieves a user by their UUID
-func (s *ConsentService) GetUserByID(ctx context.Context, userID uuid.UUID) (*models.MasterUser, error) {
-	var user models.MasterUser
-	if err := s.repo.DB().WithContext(ctx).Where("user_id = ?", userID).First(&user).Error; err != nil {
-		if errors.Is(err, repository.ErrRecordNotFound) {
-			return nil, fmt.Errorf("user not found: %w", err)
-		}
-		return nil, fmt.Errorf("error fetching user: %w", err)
+func (s *ConsentService) GetUserByID(ctx context.Context, userID uuid.UUID) (*models.DataPrincipal, error) {
+	var user models.DataPrincipal
+	// This assumes a global user table, which is now deprecated.
+	// We need to decide how to look up a user. For now, we'll assume a direct lookup
+	// in a master user table if one exists, but this needs refactoring.
+	if err := db.MasterDB.WithContext(ctx).First(&user, "id = ?", userID).Error; err != nil {
+		return nil, err
 	}
 	return &user, nil
 }
 
-func (s *ConsentService) AdminOverrideConsent(ctx context.Context, tenantID uuid.UUID, override AdminConsentOverride) error {
-	purposeBytes, err := json.Marshal(override.Purposes)
-	if err != nil {
-		return err
-	}
-
-	var consentPurposes dto.ConsentPurposes
-	err = json.Unmarshal(purposeBytes, &consentPurposes)
-	if err != nil {
-		log.Printf("Error unmarshalling purposes: %v", err)
-		return fmt.Errorf("invalid consent purposes format: %w", err)
-	}
-
-	consent := models.Consent{
-		UserID:   uuid.MustParse(override.UID),
-		Purposes: consentPurposes,
-		TenantID: tenantID,
-	}
-	if err := s.repo.UpsertConsent(&consent); err != nil {
-		return err
-	}
-
-	history := models.ConsentHistory{
-		ID:        uuid.New(),
-		UserID:    uuid.MustParse(override.UID),
-		TenantID:  tenantID,
-		Action:    "overridden",
-		Purposes:  purposeBytes,
-		Timestamp: time.Now(),
-		ChangedBy: "admin",
-	}
-	return s.repo.StoreHistory(&history)
-}
-
-func (s *ConsentService) GetConsentLogs(ctx context.Context, tenantID uuid.UUID) ([]models.ConsentHistory, error) {
-	if tenantID == uuid.Nil {
-		return nil, errors.New("tenant ID cannot be nil")
-	}
-	return s.repo.GetTenantConsentLogs(tenantID)
-}
-
-func (s *ConsentService) LoadReviewPageData(ctx context.Context, token string) (dto.ReviewPageData, error) {
-	return s.repo.LoadReviewTokenData(token)
-}
-
-func (s *ConsentService) ProcessReviewSubmission(ctx context.Context, token string, userID uuid.UUID, submission ConsentReviewSubmission) error {
-	data, err := s.repo.LoadReviewTokenData(token)
-	if err != nil {
-		return err
-	}
-	if data.UID != userID.String() {
-		return errors.New("unauthorized submission")
-	}
-
-	purposeBytes, err := json.Marshal(submission.Purposes)
-	if err != nil {
-		return err
-	}
-
-	var consentPurposes dto.ConsentPurposes
-	err = json.Unmarshal(purposeBytes, &consentPurposes)
-	if err != nil {
-		log.Printf("Error unmarshalling purposes: %v", err)
-		return fmt.Errorf("invalid consent purposes format: %w", err)
-	}
-
-	consent := models.Consent{
-		UserID:   userID,
-		TenantID: data.TenantID,
-		Purposes: consentPurposes,
-	}
-	if err := s.repo.UpsertConsent(&consent); err != nil {
-		return err
-	}
-
-	history := models.ConsentHistory{
-		ID:        uuid.New(),
-		UserID:    userID,
-		TenantID:  data.TenantID,
-		Action:    "reviewed",
-		Purposes:  purposeBytes,
-		Timestamp: time.Now(),
-	}
-	return s.repo.CreateHistory(&history, data.TenantID)
-}
-
 // Fetch user by email (for dashboard guardian flow)
-func (s *ConsentService) GetUserByEmail(ctx context.Context, email string) (*models.MasterUser, error) {
-	var user models.MasterUser
-	if err := s.repo.DB().WithContext(ctx).Where("email = ?", email).First(&user).Error; err != nil {
+func (s *ConsentService) GetUserByEmail(ctx context.Context, email string) (*models.DataPrincipal, error) {
+	var user models.DataPrincipal
+	if err := db.MasterDB.WithContext(ctx).First(&user, "email = ?", email).Error; err != nil {
 		return nil, err
 	}
 	return &user, nil
 }
 
 // Initiate dashboard guardian approval (parent is a registered user)
-func (s *ConsentService) InitiateGuardianDashboardApproval(ctx context.Context, minor *models.MasterUser, guardian *models.MasterUser, updates []ConsentUpdateRequest) error {
+func (s *ConsentService) InitiateGuardianDashboardApproval(ctx context.Context, minor *models.DataPrincipal, guardian *models.DataPrincipal, updates []ConsentUpdateRequest) error {
 	updatesJSON, err := json.Marshal(updates)
 	if err != nil {
 		return err
 	}
 	pc := models.PendingConsent{
 		ID:             uuid.New(),
-		MinorUserID:    minor.UserID,
-		GuardianUserID: &guardian.UserID,
+		MinorUserID:    minor.ID,
+		GuardianUserID: &guardian.ID,
 		Updates:        updatesJSON,
 		Status:         "pending",
-		Token:          uuid.New().String(),
 	}
 	if err := s.repo.DB().WithContext(ctx).Create(&pc).Error; err != nil {
 		return err
 	}
-	// TODO: Notify guardian by email, dashboard, etc.
-	fmt.Printf("[PARENT DASHBOARD FLOW] Pending consent: %s, guardian: %s\n", pc.ID, guardian.Email)
+	// TODO: Send notification to guardian
 	return nil
 }
 
@@ -420,7 +329,7 @@ func (s *ConsentService) ProcessGuardianDashboardApproval(ctx context.Context, g
 }
 
 // Initiate DigiLocker guardian flow (parent is not a user)
-func (s *ConsentService) InitiateGuardianDigiLockerVerification(ctx context.Context, minor *models.MasterUser, updates []ConsentUpdateRequest) error {
+func (s *ConsentService) InitiateGuardianDigiLockerVerification(ctx context.Context, minor *models.DataPrincipal, updates []ConsentUpdateRequest) error {
 	updatesJSON, err := json.Marshal(updates)
 	if err != nil {
 		return err
@@ -428,7 +337,7 @@ func (s *ConsentService) InitiateGuardianDigiLockerVerification(ctx context.Cont
 	token := uuid.New().String() // Could use a more secure generator
 	pc := models.PendingConsent{
 		ID:             uuid.New(),
-		MinorUserID:    minor.UserID,
+		MinorUserID:    minor.ID,
 		GuardianUserID: nil, // DigiLocker
 		Updates:        updatesJSON,
 		Status:         "pending",
@@ -448,7 +357,8 @@ func (s *ConsentService) GenerateDigiLockerLink(ctx context.Context, pendingCons
 	if err := s.repo.DB().WithContext(ctx).Where("id = ?", pendingConsentID).First(&pc).Error; err != nil {
 		return "", err
 	}
-	link := fmt.Sprintf("https://digilocker.gov.in/verify?token=%s", pc.Token) // Replace with real
+	cfg := config.LoadConfig()
+	link := fmt.Sprintf("%s/verify?token=%s", cfg.DigiLockerBaseURL, pc.Token)
 	return link, nil
 }
 
@@ -475,6 +385,32 @@ func (s *ConsentService) ProcessDigiLockerCallback(ctx context.Context, token st
 	}
 	pc.UpdatedAt = time.Now()
 	return s.repo.DB().WithContext(ctx).Save(&pc).Error
+}
+
+// AdminOverrideConsent allows an admin to override user consents
+func (s *ConsentService) AdminOverrideConsent(ctx context.Context, override AdminConsentOverride) error {
+	// Parse the user ID
+	userID, err := uuid.Parse(override.UID)
+	if err != nil {
+		return fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// For now, we'll use a default tenant ID
+	// In a real implementation, this would be derived from the admin's context
+	tenantID := uuid.Nil
+
+	// Create consent update request
+	updateReq := ConsentUpdateRequest{
+		TenantID: tenantID,
+		Purposes: override.Purposes,
+	}
+
+	// Update the consents
+	if err := s.UpdateConsents(ctx, userID, []ConsentUpdateRequest{updateReq}); err != nil {
+		return fmt.Errorf("failed to update consents: %w", err)
+	}
+
+	return nil
 }
 
 type ConsentLinkService struct {

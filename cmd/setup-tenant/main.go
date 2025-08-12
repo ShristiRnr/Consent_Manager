@@ -60,7 +60,7 @@ func main() {
 	}
 
 	err = gdb.AutoMigrate(
-		&models.TenantUser{},
+		&models.DataPrincipal{},
 		&models.Consent{},
 		&models.ConsentHistory{},
 		&models.Purpose{},
@@ -69,8 +69,6 @@ func main() {
 		&models.Grievance{},
 		&models.Notification{},
 		&models.APIKey{},
-		// &models.WebhookConfig{},
-		// &models.WebhookDelivery{},
 	)
 	if err != nil {
 		log.Logger.Fatal().Err(err).Msg("Migration failed for tenant schema")

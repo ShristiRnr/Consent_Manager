@@ -19,15 +19,17 @@ import (
 )
 
 type GrievanceHandler struct {
-	notifRepo *repository.NotificationRepo
-	hub       *realtime.Hub
+	notificationService *services.NotificationService
+	hub                 *realtime.Hub
+	auditService        *services.AuditService
 }
 
 func NewGrievanceHandler(
-	notifRepo *repository.NotificationRepo,
+	notificationService *services.NotificationService,
 	hub *realtime.Hub,
+	auditService *services.AuditService,
 ) *GrievanceHandler {
-	return &GrievanceHandler{notifRepo: notifRepo, hub: hub}
+	return &GrievanceHandler{notificationService: notificationService, hub: hub, auditService: auditService}
 }
 
 // ===== Helper functions to get per-request service =====
@@ -64,7 +66,7 @@ func (h *GrievanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	req.TenantID = tenantID // trust server context
 
-	userIDStr := middlewares.GetUserID(r.Context())
+		userIDStr := middlewares.GetDataPrincipalID(r.Context())
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		http.Error(w, "invalid user id", http.StatusBadRequest)
@@ -76,6 +78,9 @@ func (h *GrievanceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Audit log
+	go h.auditService.Create(r.Context(), userID, uuid.MustParse(tenantID), uuid.Nil, "grievance_created", "", userID.String(), r.RemoteAddr, "", "", map[string]interface{}{"grievance_id": g.ID})
 
 	go h.notify(r.Context(), userID,
 		"Grievance submitted",
@@ -141,8 +146,8 @@ func (h *GrievanceHandler) ListForUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	userID := middlewares.GetUserID(r.Context())
-	list, err := svc.ListForUser(r.Context(), userID)
+	userIDStr := middlewares.GetDataPrincipalID(r.Context())
+	list, err := svc.ListForUser(r.Context(), userIDStr)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -272,6 +277,5 @@ func (h *GrievanceHandler) notify(ctx context.Context, user uuid.UUID, title, bo
 		Unread:    true,
 		CreatedAt: time.Now(),
 	}
-	_ = h.notifRepo.Create(&n)
-	h.hub.Publish(user, n)
+	h.notificationService.Create(ctx, &n)
 }

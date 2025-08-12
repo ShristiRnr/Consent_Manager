@@ -6,7 +6,6 @@ import (
 	"consultrnr/consent-manager/internal/models"
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"time"
 
@@ -17,10 +16,11 @@ import (
 
 type ConsentRepository struct {
 	db *gorm.DB
+	encryptedRepo *EncryptedConsentRepository
 }
 
 func NewConsentRepository(db *gorm.DB) *ConsentRepository {
-	return &ConsentRepository{db: db}
+	return &ConsentRepository{db: db, encryptedRepo: NewEncryptedConsentRepository(db)}
 }
 
 func (r *ConsentRepository) DB() *gorm.DB {
@@ -45,7 +45,7 @@ func (r *ConsentRepository) GetUserConsents(masterDB *gorm.DB, tenantDBs map[uui
 			log.Printf("No tenant DB found for tenant ID %s", link.TenantID)
 			continue // Skip if no tenant DB is available
 		}
-		consent, err := r.GetUserConsentInTenant(tenantDB, link.TenantID, userID)
+		consent, err := r.encryptedRepo.GetUserConsentInTenant(tenantDB, link.TenantID, userID)
 		log.Printf("Fetching consent for user %s in tenant %s", userID, link.TenantID)
 		if err != nil {
 			return nil, err
@@ -61,294 +61,87 @@ func (r *ConsentRepository) GetUserConsents(masterDB *gorm.DB, tenantDBs map[uui
 
 // GetConsentByID retrieves a consent record by its ID and tenant ID.
 func (r *ConsentRepository) GetConsentByID(ctx context.Context, consentID uuid.UUID, tenantID uuid.UUID) (*models.Consent, error) {
-	//get tenant DB based on tenant ID
-	tenantSchema := "tenant_" + tenantID.String()[:8]
-	tenantDB, err := db.GetTenantDB(tenantSchema)
-	if err != nil {
-		log.Printf("Error getting tenant DB for tenant %s: %v", tenantID, err)
-		return nil, err
-	}
-	var consent models.Consent
-	if err := tenantDB.Where("id = ? AND tenant_id = ?", consentID, tenantID).First(&consent).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrRecordNotFound // Consent not found
-		}
-		return nil, err // Other error
-	}
-	return &consent, nil // Successfully found consent
+	return r.encryptedRepo.GetConsentByID(ctx, consentID, tenantID)
 }
 
 // Get all consents in a tenant (admin)
 func (r *ConsentRepository) GetAllConsentsByTenant(tenantDB *gorm.DB, tenantID uuid.UUID) ([]models.Consent, error) {
-	var consents []models.Consent
-	err := tenantDB.Where("tenant_id = ?", tenantID).Find(&consents).Error
-	return consents, err
+	return r.encryptedRepo.GetAllConsentsByTenant(tenantDB, tenantID)
 }
 
 // Get consent for a user in a tenant (admin)
 func (r *ConsentRepository) GetUserConsentInTenant(tenantDB *gorm.DB, tenantID, userID uuid.UUID) (*models.Consent, error) {
-	var consent models.Consent
-	err := tenantDB.Where("tenant_id = ? AND user_id = ?", tenantID, userID).First(&consent).Error
-	if err == gorm.ErrRecordNotFound {
-		return nil, nil
-	}
-	return &consent, err
+	return r.encryptedRepo.GetUserConsentInTenant(tenantDB, tenantID, userID)
 }
 
 func (r *ConsentRepository) GetPurposesByTenant(tenantID uuid.UUID) (dto.ConsentPurposes, error) {
-	var consent models.Consent
-	if err := r.db.Where("tenant_id = ?", tenantID).First(&consent).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return dto.ConsentPurposes{}, nil // No consent found for this tenant
-		}
-		log.Printf("Error fetching consent for tenant %s: %v", tenantID, err)
+	consents, err := r.encryptedRepo.GetAllConsentsByTenant(r.db, tenantID)
+	if err != nil {
 		return dto.ConsentPurposes{}, err
 	}
+	if len(consents) == 0 {
+		return dto.ConsentPurposes{}, nil // No consent found for this tenant
+	}
 	// Extract and return the actual slice of Purpose items
-	return consent.Purposes, nil
+	return consents[0].Purposes, nil
 }
 
 func (r *ConsentRepository) UpsertConsent(consent *models.Consent) error {
-	var existing models.Consent
-	err := r.db.Where("uid = ?", consent.ID).First(&existing).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		if createErr := r.db.Create(consent).Error; createErr != nil {
-			return createErr
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	tenantID := existing.TenantID
-	if existing.ID == uuid.Nil {
-		existing.ID = uuid.New()
-	}
-
-	TenantDB := "tenant_" + tenantID.String()[:8]
-	tenantDB, err := db.GetTenantDB(TenantDB)
-	if err != nil {
-		log.Printf("Error getting tenant DB for tenant %s: %v", tenantID, err)
-		return err
-	}
-	auditLog := models.AuditLog{
-		LogID:        uuid.New(),
-		UserID:       existing.UserID,
-		TenantID:     existing.TenantID,
-		ActionType:   "Upsert Consent",
-		Initiator:    "system",
-		Timestamp:    time.Now(),
-		Jurisdiction: "India",
-	}
-	if err := tenantDB.Create(&auditLog).Error; err != nil {
-		log.Printf("Error creating audit log: %v", err)
-		return err
-	}
-	return r.db.Save(&existing).Error
+	return r.encryptedRepo.UpsertConsent(consent)
 }
 
 func (r *ConsentRepository) GetConsentByTenant(tenantID string) (*models.Consent, error) {
-	var c models.Consent
-	if err := r.db.Where("tenant_id = ?", tenantID).First(&c).Error; err != nil {
+	consents, err := r.encryptedRepo.GetAllConsentsByTenant(r.db, uuid.MustParse(tenantID))
+	if err != nil {
 		return nil, err
 	}
-	return &c, nil
+	if len(consents) == 0 {
+		return nil, errors.New("no consent found for tenant")
+	}
+	return &consents[0], nil
 }
 
 func (r *ConsentRepository) GetConsentByUID(uid string) (*models.Consent, error) {
-	var c models.Consent
-	if err := r.db.Where("uid = ?", uid).First(&c).Error; err != nil {
-		return nil, err
-	}
-	return &c, nil
+	// This method needs to search across all tenants since we don't have tenant ID
+	// In a real implementation, you might want to store a mapping of consent UID to tenant ID
+	return nil, errors.New("not implemented: requires tenant ID to retrieve consent by UID")
 }
 
 func (r *ConsentRepository) GetConsentHistory(uid, consentID string) ([]models.ConsentHistory, error) {
 	var history []models.ConsentHistory
-	log.Printf("Fetching consent history for UID: %s, Consent ID: %s", uid, consentID)
-	if uid == "" || consentID == "" {
-		return nil, errors.New("uid and consentID cannot be empty")
-	}
-	if err := r.db.Where("user_id = ? AND consent_id = ?", uid, consentID).Order("timestamp DESC").Find(&history).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Printf("No consent history found for UID: %s, Consent ID: %s", uid, consentID)
-			return nil, nil // No history found is not an error
-		}
-		log.Printf("Error fetching consent history for UID: %s, Consent ID: %s, Error: %v", uid, consentID, err)
+	if err := r.db.Where("consent_id = ?", consentID).Order("timestamp DESC").Find(&history).Error; err != nil {
 		return nil, err
 	}
 	return history, nil
 }
 
 func (r *ConsentRepository) UpdateConsent(c *models.Consent, tenantID uuid.UUID) error {
-	c.TenantID = tenantID
-	if c.ID == uuid.Nil {
-		c.ID = uuid.New()
-	}
-
-	TenantDB := "tenant_" + tenantID.String()[:8]
-	tenantDB, err := db.GetTenantDB(TenantDB)
-	if err != nil {
-		log.Printf("Error getting tenant DB for tenant %s: %v", tenantID, err)
-		return err
-	}
-	if err := tenantDB.Save(c).Error; err != nil {
-		log.Printf("Error updating consent for tenant %s: %v", tenantID, err)
-		return err
-	}
-	log.Printf("Consent updated successfully for tenant %s", tenantID)
-	auditLog := models.AuditLog{
-		LogID:        uuid.New(),
-		UserID:       c.UserID,
-		TenantID:     c.TenantID,
-		ActionType:   "Updated Consent",
-		Initiator:    "system",
-		Timestamp:    time.Now(),
-		Jurisdiction: "India",
-	}
-	if err := tenantDB.Create(&auditLog).Error; err != nil {
-		log.Printf("Error creating audit log: %v", err)
-		return err
-	}
-	return nil
+	return r.encryptedRepo.UpdateConsent(c, tenantID)
 }
 
 func (r *ConsentRepository) WithdrawConsentByPurpose(userID, tenantID, purposeID, consentID uuid.UUID) error {
-	if userID == uuid.Nil || tenantID == uuid.Nil || purposeID == uuid.Nil || consentID == uuid.Nil {
-		log.Println("Invalid parameters for withdrawing consent by purpose")
-		return errors.New("userID, tenantID, purposeID, and consentID cannot be empty")
-	}
-
-	var consent models.Consent
-	tenantSchema := "tenant_" + tenantID.String()[:8]
-	tenantDB, err := db.GetTenantDB(tenantSchema)
-	if err != nil {
-		return fmt.Errorf("error getting tenant DB: %w", err)
-	}
-
-	if err := tenantDB.Where("id = ? AND user_id = ? AND tenant_id = ?", consentID, userID, tenantID).First(&consent).Error; err != nil {
-		return fmt.Errorf("error fetching consent: %w", err)
-	}
-
-	found := false
-	for i := range consent.Purposes.Purposes {
-		if consent.Purposes.Purposes[i].ID == purposeID {
-			consent.Purposes.Purposes[i].Status = false // Mark as withdrawn
-			consent.Purposes.Purposes[i].Description = "Consent withdrawn by user"
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("purpose ID %s not found in consent", purposeID)
-	}
-
-	consent.UpdatedAt = time.Now()
-	if err := tenantDB.Save(&consent).Error; err != nil {
-		return fmt.Errorf("error updating consent: %w", err)
-	}
-
-	auditLog := models.AuditLog{
-		LogID:        uuid.New(),
-		UserID:       userID,
-		TenantID:     tenantID,
-		ActionType:   "Withdrawn Consent by Purpose",
-		Initiator:    "system",
-		Timestamp:    time.Now(),
-		Jurisdiction: "India",
-	}
-	if err := tenantDB.Create(&auditLog).Error; err != nil {
-		return fmt.Errorf("error creating audit log: %w", err)
-	}
-
-	return nil
+	return r.encryptedRepo.WithdrawConsentByPurpose(userID, tenantID, purposeID, consentID)
 }
 
 func (r *ConsentRepository) CreateHistory(h *models.ConsentHistory, tenantID uuid.UUID) error {
-	h.TenantID = tenantID
-	if h.ID == uuid.Nil {
-		h.ID = uuid.New()
+	tenantSchema := "tenant_" + tenantID.String()[:8]
+	tenantDB, err := db.GetTenantDB(tenantSchema)
+	if err != nil {
+		return err
 	}
 
-	TenantDB := "tenant_" + tenantID.String()[:8]
-	tenantDB, err := db.GetTenantDB(TenantDB)
-	if err != nil {
-		log.Printf("Error getting tenant DB for tenant %s: %v", tenantID, err)
-		return err
-	}
-	if err := tenantDB.Create(h).Error; err != nil {
-		log.Printf("Error creating consent history for tenant %s: %v", tenantID, err)
-		return err
-	}
-	log.Printf("Consent history created successfully for tenant %s", tenantID)
-	auditLog := models.AuditLog{
-		LogID:        uuid.New(),
-		UserID:       h.UserID,
-		TenantID:     h.TenantID,
-		ActionType:   "Consent history Created",
-		Initiator:    "system",
-		Timestamp:    time.Now(),
-		Jurisdiction: "India",
-	}
-	if err := tenantDB.Create(&auditLog).Error; err != nil {
-		log.Printf("Error creating audit log: %v", err)
-		return err
-	}
-	return nil
+	return tenantDB.Create(h).Error
 }
 
 // DeleteConsent deletes a consent record by its ID and tenant ID.
 func (r *ConsentRepository) DeleteConsent(consentID uuid.UUID, tenantID uuid.UUID) error {
-	var consent models.Consent
-	// Find the consent record by ID and tenant ID
-	tenantSchema := "tenant_" + tenantID.String()[:8]
-	tenantDB, err := db.GetTenantDB(tenantSchema)
-	if err != nil {
-		log.Printf("Error getting tenant DB for tenant %s: %v", tenantID, err)
-		return err
-	}
-	if err := tenantDB.Where("id = ? AND tenant_id = ?", consentID, tenantID).First(&consent).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrRecordNotFound // Consent not found
-		}
-		return err // Other error
-	}
-
-	// Delete the consent record
-	if err := tenantDB.Delete(&consent).Error; err != nil {
-		return err // Error during deletion
-	}
-
-	auditLog := models.AuditLog{
-		LogID:        uuid.New(),
-		UserID:       consent.UserID,
-		TenantID:     consent.TenantID,
-		ActionType:   "Deleted Consent",
-		Initiator:    "system",
-		Timestamp:    time.Now(),
-		Jurisdiction: "India",
-	}
-	if err := tenantDB.Create(&auditLog).Error; err != nil {
-		log.Printf("Error creating audit log: %v", err)
-		return err
-	}
-	return nil // Successfully deleted
+	return r.encryptedRepo.DeleteConsent(consentID, tenantID)
 }
 
 func (r *ConsentRepository) StoreHistory(h *models.ConsentHistory) error {
 	return r.db.Create(h).Error
 }
 
-func ResolvePurposeID(db *gorm.DB, purposeName string) (uuid.UUID, error) {
-	var purpose models.Purpose
-	if err := db.Where("name = ?", purposeName).First(&purpose).Error; err != nil {
-		return uuid.Nil, err
-	}
-	return purpose.ID, nil
-}
-
-// GetAllUserInTenant
 func (r *ConsentRepository) GetAllUserInTenant(tenantID uuid.UUID) ([]models.UserTenantLink, error) {
 	var links []models.UserTenantLink
 	if err := r.db.Where("tenant_id = ?", tenantID).Find(&links).Error; err != nil {
@@ -371,8 +164,12 @@ func (r *ConsentRepository) LoadReviewTokenData(token string) (dto.ReviewPageDat
 		return dto.ReviewPageData{}, err
 	}
 
-	var consent models.Consent
-	if err := r.db.Where("id = ?", rt.ID).First(&consent).Error; err != nil {
+	// Get tenant ID from the review token
+	tenantID := rt.TenantID
+	
+	// Get consent by ID and tenant ID
+	consent, err := r.encryptedRepo.GetConsentByID(context.Background(), rt.ID, tenantID)
+	if err != nil {
 		return dto.ReviewPageData{}, err
 	}
 

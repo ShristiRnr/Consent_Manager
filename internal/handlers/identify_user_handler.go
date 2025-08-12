@@ -3,10 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
-	jwt "consultrnr/consent-manager/internal/auth"
 	"consultrnr/consent-manager/internal/db"
+	"consultrnr/consent-manager/internal/middlewares"
 	"consultrnr/consent-manager/internal/models"
 	"consultrnr/consent-manager/pkg/log"
 
@@ -18,70 +17,43 @@ type IdentifyRequest struct {
 }
 
 func identifyUserHandler(w http.ResponseWriter, r *http.Request) {
-	// 1) Auth header
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		http.Error(w, "missing Authorization header", http.StatusUnauthorized)
-		return
-	}
-	parts := strings.SplitN(auth, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		http.Error(w, "invalid Authorization header", http.StatusUnauthorized)
-		return
-	}
-
-	publicKey, err := jwt.LoadPublicKey("path/to/public_key.pem")
-	if err != nil {
-		http.Error(w, "failed to load public key", http.StatusInternalServerError)
-		return
-	}
-
-	// 2) Parse token and require admin
-	claims, err := jwt.ParseAdminToken(parts[1], publicKey)
-	if err != nil {
-		http.Error(w, "invalid or expired token", http.StatusUnauthorized)
-		return
-	}
+	// 1. Get claims from context (populated by middleware)
+	claims := middlewares.GetFiduciaryAuthClaims(r.Context())
 	if claims == nil {
-		http.Error(w, "forbidden: admin only", http.StatusForbidden)
+		writeError(w, http.StatusUnauthorized, "Unauthorized: not a fiduciary user")
 		return
 	}
 
-	// 3) Decode JSON body
+	// 2. Decode JSON body
 	var req IdentifyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
 
-	// 4) Parse UUID
+	// 3. Parse UUID
 	userUUID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		http.Error(w, "invalid userId format", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid userId format")
 		return
 	}
 
-	// 5) Lookup user in master DB
+	// 4. Lookup user in master DB
 	masterDB := db.GetMasterDB()
-	var mu models.MasterUser
-	if err := masterDB.
-		Where("user_id = ?", userUUID).
-		First(&mu).
-		Error; err != nil {
-		http.Error(w, "user not found", http.StatusNotFound)
+	var dp models.DataPrincipal
+	if err := masterDB.First(&dp, userUUID).Error; err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	log.Logger.Info().
-		Str("admin", claims.Subject).
-		Str("user_id", mu.UserID.String()).
-		Msg("Master user lookup")
+		Str("fiduciaryId", claims.FiduciaryID).
+		Str("dataPrincipalId", dp.ID.String()).
+		Msg("Data principal lookup by fiduciary")
 
-	// 6) Return JSON with email
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"userId": mu.UserID.String(),
-		"email":  mu.Email,
+	// 5. Return JSON with email
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"userId": dp.ID.String(),
+		"email":  dp.Email,
 	})
 }

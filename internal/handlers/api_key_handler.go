@@ -49,7 +49,7 @@ func CreateAPIKeyHandler(db *gorm.DB, publicKey *rsa.PublicKey) http.HandlerFunc
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		claims, err := auth.ParseAdminToken(tokenStr, publicKey)
+		claims, err := auth.ParseFiduciaryToken(tokenStr, publicKey)
 		if err != nil {
 			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 			return
@@ -95,7 +95,7 @@ func CreateAPIKeyHandler(db *gorm.DB, publicKey *rsa.PublicKey) http.HandlerFunc
 		key := models.APIKey{
 			KeyID:          uuid.New(),
 			TenantID:       uuid.MustParse(claims.TenantID),
-			UserID:         uuid.MustParse(claims.AdminID),
+			UserID:         uuid.MustParse(claims.ID),
 			Label:          req.Label,
 			HashedKey:      encryptedKey,
 			Scopes:         scopesBytes,
@@ -126,7 +126,7 @@ func ListAPIKeysHandler(db *gorm.DB, publicKey *rsa.PublicKey) http.HandlerFunc 
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		claims, err := auth.ParseAdminToken(tokenStr, publicKey)
+		claims, err := auth.ParseFiduciaryToken(tokenStr, publicKey)
 		if err != nil {
 			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 			return
@@ -193,7 +193,7 @@ func RevokeAPIKeyHandler(db *gorm.DB, publicKey *rsa.PublicKey) http.HandlerFunc
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		claims, err := auth.ParseAdminToken(tokenStr, publicKey)
+		claims, err := auth.ParseFiduciaryToken(tokenStr, publicKey)
 		if err != nil {
 			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 			return
@@ -220,7 +220,7 @@ func ReviewTokenHandler(db *gorm.DB, publicKey *rsa.PublicKey) http.HandlerFunc 
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		claims, err := auth.ParseAdminToken(tokenStr, publicKey)
+		claims, err := auth.ParseFiduciaryToken(tokenStr, publicKey)
 		if err != nil {
 			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 			return

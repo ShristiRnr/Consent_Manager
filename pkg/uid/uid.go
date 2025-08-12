@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
+
+	"consultrnr/consent-manager/config"
 )
 
 type UIDResponse struct {
@@ -15,16 +16,13 @@ type UIDResponse struct {
 }
 
 var (
-	defaultUIDServiceURL = "http://localhost:5001/generate"
-	httpClient           = &http.Client{Timeout: 5 * time.Second}
+	httpClient = &http.Client{Timeout: 5 * time.Second}
 )
 
 // GetUID calls the external UID service to generate a UID for the given input.
 func GetUID(input string) (string, error) {
-	uidServiceURL := os.Getenv("UID_SERVICE_URL")
-	if uidServiceURL == "" {
-		uidServiceURL = defaultUIDServiceURL
-	}
+	cfg := config.LoadConfig()
+	uidServiceURL := cfg.UIDServiceURL
 
 	payload := map[string]string{"input": input}
 	jsonData, err := json.Marshal(payload)

@@ -1,2 +1,24 @@
 {"level":"info","app":"consent-manager","time":"2025-05-27T18:01:07+05:30","message":"encryption ready"}
 {"level":"info","app":"consent-manager","time":"2025-05-27T18:01:47+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:58:04+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:58:05+05:30","message":"Database already seeded."}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:58:38+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:58:39+05:30","message":"Database already seeded."}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:59:11+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:59:11+05:30","message":"Database already seeded."}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:59:39+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T14:59:40+05:30","message":"Database already seeded."}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:00:03+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:00:03+05:30","message":"Database already seeded."}
+{"level":"fatal","app":"consent-manager","error":"open private.pem: The system cannot find the file specified.","time":"2025-08-12T15:00:03+05:30","message":"failed to load private key"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:00:31+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:00:32+05:30","message":"Database already seeded."}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:00:32+05:30","message":"Server starting on port 8080"}
+{"level":"fatal","app":"consent-manager","error":"listen tcp :8080: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.","time":"2025-08-12T15:00:32+05:30","message":"server failed"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:01:28+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:01:28+05:30","message":"Database already seeded."}
+{"level":"info","app":"consent-manager","time":"2025-08-12T15:01:28+05:30","message":"Server starting on port 8080"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T16:34:50+05:30","message":"encryption ready"}
+{"level":"info","app":"consent-manager","time":"2025-08-12T16:34:51+05:30","message":"Database already seeded."}
+{"level":"info","app":"consent-manager","time":"2025-08-12T16:34:51+05:30","message":"Server starting on port 8080"}
+{"level":"fatal","app":"consent-manager","error":"listen tcp :8080: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.","time":"2025-08-12T16:34:51+05:30","message":"server failed"}

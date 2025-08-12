@@ -1,43 +1,46 @@
 package repository
 
 import (
-	"time"
-
-	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/models"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm/clause"
+	"gorm.io/gorm"
 )
 
-// EnsureUserTenantLink inserts or updates the user-tenant link to reflect consent tracking.
-func EnsureUserTenantLink(userID, tenantID uuid.UUID) error {
-	link := models.UserTenantLink{
-		ID:             uuid.New(),
-		UserID:         userID,
-		TenantID:       tenantID,
-		FirstGrantedAt: time.Now(),
-		LastUpdatedAt:  time.Now(),
-	}
-
-	return db.MasterDB.
-		Clauses(clause.OnConflict{
-			Columns: []clause.Column{
-				{Name: "user_id"},
-				{Name: "tenant_id"},
-			},
-			DoUpdates: clause.Assignments(map[string]any{
-				"last_updated_at": time.Now(),
-			}),
-		}).
-		Create(&link).Error
+type UserConsentRepository struct {
+	db *gorm.DB
 }
 
-// GetUserTenantLinks returns all tenants a user has consent history with.
-func GetUserTenantLinks(userID uuid.UUID) ([]models.UserTenantLink, error) {
-	var links []models.UserTenantLink
-	err := db.MasterDB.
-		Where("user_id = ?", userID).
-		Find(&links).Error
-	return links, err
+func NewUserConsentRepository(db *gorm.DB) *UserConsentRepository {
+	return &UserConsentRepository{db: db}
+}
+
+func (r *UserConsentRepository) CreateUserConsent(userConsent *models.UserConsent) (*models.UserConsent, error) {
+	if err := r.db.Create(userConsent).Error; err != nil {
+		return nil, err
+	}
+	return userConsent, nil
+}
+
+func (r *UserConsentRepository) UpdateUserConsent(userConsent *models.UserConsent) (*models.UserConsent, error) {
+	if err := r.db.Save(userConsent).Error; err != nil {
+		return nil, err
+	}
+	return userConsent, nil
+}
+
+func (r *UserConsentRepository) GetUserConsent(userID, purposeID, tenantID uuid.UUID) (*models.UserConsent, error) {
+	var userConsent models.UserConsent
+	if err := r.db.Where("user_id = ? AND purpose_id = ? AND tenant_id = ?", userID, purposeID, tenantID).First(&userConsent).Error; err != nil {
+		return nil, err
+	}
+	return &userConsent, nil
+}
+
+func (r *UserConsentRepository) ListUserConsents(userID, tenantID uuid.UUID) ([]models.UserConsent, error) {
+	var userConsents []models.UserConsent
+	if err := r.db.Where("user_id = ? AND tenant_id = ?", userID, tenantID).Find(&userConsents).Error; err != nil {
+		return nil, err
+	}
+	return userConsents, nil
 }

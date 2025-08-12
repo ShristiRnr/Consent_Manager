@@ -5,9 +5,9 @@ services:
     container_name: postgres-master
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: consent_master
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB_MASTER}
     ports:
       - "5432:5432"
     volumes:
@@ -23,9 +23,9 @@ services:
     container_name: postgres-us-east
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: consent_us
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB_US_EAST}
     ports:
       - "5433:5432"
     volumes:
@@ -41,9 +41,9 @@ services:
     container_name: postgres-eu-west
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: consent_eu
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB_EU_WEST}
     ports:
       - "5434:5432"
     volumes:
@@ -72,15 +72,15 @@ services:
     ports:
       - "8080:8080"
     environment:
-      PORT: 8080
-      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
-      DATABASE_US_EAST: postgres://postgres:postgres@postgres-us-east:5432/consent_us?sslmode=disable
-      DATABASE_EU_WEST: postgres://postgres:postgres@postgres-eu-west:5432/consent_eu?sslmode=disable
+      PORT: ${PORT}
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_US_EAST: ${DATABASE_US_EAST}
+      DATABASE_EU_WEST: ${DATABASE_EU_WEST}
       JWT_SECRET: ${JWT_SECRET}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       DEBUG_ADMIN_SECRET: ${DEBUG_ADMIN_SECRET}
-      ADMIN_TOKEN_TTL: 1h
-      USER_TOKEN_TTL: 12h
+      ADMIN_TOKEN_TTL: ${ADMIN_TOKEN_TTL}
+      USER_TOKEN_TTL: ${USER_TOKEN_TTL}
     working_dir: /app
     command: "/app/bin/server"
 
@@ -94,7 +94,7 @@ services:
       postgres-master:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL}
     command: "/app/bin/retry-worker"
 
   # 🛠️ DB Migration Job
@@ -107,7 +107,7 @@ services:
       postgres-master:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL}
     command: "/app/bin/migrate"
     restart: "no"
   
@@ -121,9 +121,9 @@ services:
       postgres-master:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
-      DATABASE_US_EAST: postgres://postgres:postgres@postgres-us-east:5432/consent_us?sslmode=disable
-      DATABASE_EU_WEST: postgres://postgres:postgres@postgres-eu-west:5432/consent_eu?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_US_EAST: ${DATABASE_US_EAST}
+      DATABASE_EU_WEST: ${DATABASE_EU_WEST}
     working_dir: /app
     entrypoint: /bin/sh
     tty: true
@@ -137,7 +137,7 @@ services:
     #   context: .
     container_name: genkey
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL}
     command: "/app/bin/genkey"
     restart: "no"
 
@@ -146,8 +146,8 @@ services:
     image: dpage/pgadmin4
     container_name: pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: consent@rnrtechs.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
     ports:
       - "5050:5050"
     volumes:
@@ -165,9 +165,9 @@ services:
     environment:
       TENANT_NAME: Acme Corp
       TENANT_CLUSTER: us-east
-      DATABASE_URL: postgres://postgres:postgres@postgres-master:5432/consent_master?sslmode=disable
-      DATABASE_US_EAST: postgres://postgres:postgres@postgres-us-east:5432/consent_us?sslmode=disable
-      DATABASE_EU_WEST: postgres://postgres:postgres@postgres-eu-west:5432/consent_eu?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_US_EAST: ${DATABASE_US_EAST}
+      DATABASE_EU_WEST: ${DATABASE_EU_WEST}
     restart: "no"
 
 volumes:

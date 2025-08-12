@@ -15,7 +15,7 @@ import (
 )
 
 
-func TenantContextMiddleware(cfg config.Config) echo.MiddlewareFunc {
+func TenantContextMiddleware(cfg config.Config, auditService *services.AuditService) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			authHeader := c.Request().Header.Get("Authorization")
@@ -46,6 +46,7 @@ func TenantContextMiddleware(cfg config.Config) echo.MiddlewareFunc {
 
 func TenantInjector(
 	cfg config.Config,
+	auditService *services.AuditService,
 	requireUser bool,
 	fn func(svc *services.ConsentService) echo.HandlerFunc,
 ) echo.HandlerFunc {
@@ -73,7 +74,7 @@ func TenantInjector(
 			return echo.NewHTTPError(500, "Tenant DB not found")
 		}
 		repo := repository.NewConsentRepository(tenantDB)
-		svc := services.NewConsentService(repo)
+		svc := services.NewConsentService(repo, auditService)
 
 		c.Set("tenant_id", tenantID)
 		c.Set("tenant_db", tenantDB)

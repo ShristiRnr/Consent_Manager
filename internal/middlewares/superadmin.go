@@ -9,7 +9,7 @@ import (
 // RequireSuperAdmin blocks any admin who is not a superadmin.
 func RequireSuperAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(contextKey.AdminClaimsKey).(*auth.AdminClaims)
+		claims, ok := r.Context().Value(contextKey.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
 		if !ok || claims == nil {
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":"unauthorized"}`))

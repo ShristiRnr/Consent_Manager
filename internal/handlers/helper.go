@@ -1,14 +1,17 @@
 package handlers
 
 import (
+	"crypto/rsa"
+	"strings"
 	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/db"
+	"consultrnr/consent-manager/internal/middlewares"
 	"consultrnr/consent-manager/internal/models"
-	"consultrnr/consent-manager/pkg/log"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -28,71 +31,60 @@ func GetPurposesByIDs(ctx context.Context, purposeIDs []uuid.UUID, r *http.Reque
 }
 
 func getAdminTenantDBForRequest(r *http.Request) (*gorm.DB, string, error) {
-	// This function is similar to getTenantDBForRequest but for admin requests
-	token := r.Header.Get("authorization")
-	if token == "" {
-		return nil, "", errors.New("missing authorization header")
+	claims := middlewares.GetFiduciaryAuthClaims(r.Context())
+	if claims == nil {
+		return nil, "", errors.New("missing fiduciary claims")
 	}
-	parts := strings.Split(token, " ")
-	if len(parts) != 2 {
-		return nil, "", errors.New("invalid authorization header format")
-	}
-	token = parts[1]
-	publicKey, err := auth.LoadPublicKey("public.pem")
-	if err != nil {
-		log.Logger.Fatal().Err(err).Msg("failed to load public key")
-	}
-	parsedToken, err := auth.ParseAdminToken(token, publicKey) // Use your public key here if needed
-	if err != nil {
-		return nil, "", err
-	}
-	adminID := parsedToken.AdminID
-	if adminID == "" {
-		return nil, "", errors.New("missing admin id - not authenticated")
-	}
-	tenantID := parsedToken.TenantID
+
+	tenantID := claims.TenantID
 	if tenantID == "" {
-		return nil, "", errors.New("missing tenant id - not authenticated")
+		return nil, "", errors.New("missing tenant id from claims")
 	}
+
 	tenantSchema := "tenant_" + tenantID[:8]
-	tenantDB, _ := db.GetTenantDB(tenantSchema)
+	tenantDB, err := db.GetTenantDB(tenantSchema)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get tenant db: %w", err)
+	}
 	return tenantDB, tenantID, nil
 }
 
 // helpers.go or in the handler file
-func getTenantDBForRequest(r *http.Request) (*gorm.DB, string, error) {
-	token := r.Header.Get("authorization")
-	if token == "" {
-		return nil, "", errors.New("missing authorization header")
+func getFiduciaryClaims(r *http.Request, publicKey *rsa.PublicKey) (*auth.FiduciaryClaims, error) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return nil, errors.New("authorization header required")
 	}
-	parts := strings.Split(token, " ")
-	if len(parts) != 2 {
-		return nil, "", errors.New("invalid authorization header format")
+
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		return nil, errors.New("invalid authorization header format")
 	}
-	token = parts[1]
-	publicKey, err := auth.LoadPublicKey("public.pem")
+
+	tokenString := parts[1]
+	claims, err := auth.ParseFiduciaryToken(tokenString, publicKey)
 	if err != nil {
-		log.Logger.Fatal().Err(err).Msg("failed to load public key")
+		return nil, errors.New("invalid or expired token")
 	}
-	parsedToken, err := auth.ParseUserToken(token, publicKey) // Use your public key here if needed
-	if err != nil {
-		return nil, "", err
-	}
-	userID := parsedToken.UserID
-	if userID == "" {
-		return nil, "", errors.New("missing user id - not authenticated")
-	}
-	//find tenantID from UserTenantLink
-	var userTenantLink models.UserTenantLink
-	if err := db.MasterDB.Where("user_id = ?", userID).First(&userTenantLink).Error; err != nil {
-		return nil, "", err
-	}
-	tenantID := userTenantLink.TenantID.String()
-	if tenantID == "" {
-		return nil, "", errors.New("missing tenant id - not authenticated")
-	}
-	tenantSchema := "tenant_" + tenantID[:8]
-	tenantDB, _ := db.GetTenantDB(tenantSchema)
-	return tenantDB, tenantID, nil
+
+	return claims, nil
 }
 
+func getTenantDBForRequest(r *http.Request) (*gorm.DB, string, error) {
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	if !ok {
+		return nil, "", errors.New("missing data principal claims")
+	}
+
+	tenantID := claims.TenantID
+	if tenantID == "" {
+		return nil, "", errors.New("missing tenant id from claims")
+	}
+
+	tenantSchema := "tenant_" + tenantID[:8]
+	tenantDB, err := db.GetTenantDB(tenantSchema)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get tenant db: %w", err)
+	}
+	return tenantDB, tenantID, nil
+}
