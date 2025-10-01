@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/dto"
 	"consultrnr/consent-manager/internal/services"
@@ -22,7 +22,7 @@ func NewConsentFormHandler(service *services.ConsentFormService, auditService *s
 }
 
 func (h *ConsentFormHandler) CreateConsentForm(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if !ok {
 		writeError(w, http.StatusForbidden, "fiduciary access required")
 		return
@@ -79,7 +79,7 @@ func (h *ConsentFormHandler) UpdateConsentForm(w http.ResponseWriter, r *http.Re
 	}
 
 	// Audit logging for consent form update
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)
@@ -107,7 +107,7 @@ func (h *ConsentFormHandler) DeleteConsentForm(w http.ResponseWriter, r *http.Re
 	}
 
 	// Audit logging for consent form deletion
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)
@@ -132,7 +132,7 @@ func (h *ConsentFormHandler) GetConsentForm(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Audit logging for consent form access
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)
@@ -146,7 +146,7 @@ func (h *ConsentFormHandler) GetConsentForm(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *ConsentFormHandler) ListConsentForms(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if !ok {
 		writeError(w, http.StatusForbidden, "fiduciary access required")
 		return
@@ -196,7 +196,7 @@ func (h *ConsentFormHandler) AddPurposeToConsentForm(w http.ResponseWriter, r *h
 	}
 
 	// Audit logging for adding purpose to consent form
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)
@@ -235,7 +235,7 @@ func (h *ConsentFormHandler) UpdatePurposeInConsentForm(w http.ResponseWriter, r
 	}
 
 	// Audit logging for updating purpose in consent form
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)
@@ -267,7 +267,7 @@ func (h *ConsentFormHandler) RemovePurposeFromConsentForm(w http.ResponseWriter,
 	}
 
 	// Audit logging for removing purpose from consent form
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)
@@ -288,7 +288,7 @@ func (h *ConsentFormHandler) GetIntegrationScript(w http.ResponseWriter, r *http
 	}
 
 	// Audit logging for getting integration script
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)
@@ -317,7 +317,7 @@ func (h *ConsentFormHandler) PublishConsentForm(w http.ResponseWriter, r *http.R
 	}
 
 	// Audit logging for publishing consent form
-	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if h.AuditService != nil && claims != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		tenantID, _ := uuid.Parse(claims.TenantID)

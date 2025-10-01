@@ -1,17 +1,18 @@
 package handlers
 
 import (
-	"crypto/rsa"
-	"strings"
 	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/middlewares"
 	"consultrnr/consent-manager/internal/models"
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -50,7 +51,7 @@ func getAdminTenantDBForRequest(r *http.Request) (*gorm.DB, string, error) {
 }
 
 // helpers.go or in the handler file
-func getFiduciaryClaims(r *http.Request, publicKey *rsa.PublicKey) (*auth.FiduciaryClaims, error) {
+func getFiduciaryClaims(r *http.Request, publicKey *rsa.PublicKey) (*claims.FiduciaryClaims, error) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		return nil, errors.New("authorization header required")
@@ -71,7 +72,7 @@ func getFiduciaryClaims(r *http.Request, publicKey *rsa.PublicKey) (*auth.Fiduci
 }
 
 func getTenantDBForRequest(r *http.Request) (*gorm.DB, string, error) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		return nil, "", errors.New("missing data principal claims")
 	}

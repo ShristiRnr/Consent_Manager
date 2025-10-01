@@ -30,14 +30,6 @@ func (v *DPDPComplianceValidator) ValidateConsentForm(form *models.ConsentForm) 
 		violations = append(violations, "Consent form must have a description")
 	}
 
-	if form.DataCollectionAndUsage == "" {
-		violations = append(violations, "Consent form must specify data collection and usage")
-	}
-
-	if form.DataSharingAndTransfers == "" {
-		violations = append(violations, "Consent form must specify data sharing and transfers")
-	}
-
 	if form.DataRetentionPeriod == "" {
 		violations = append(violations, "Consent form must specify data retention period")
 	}

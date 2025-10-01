@@ -1,6 +1,7 @@
 package models
 
 import (
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/dto"
 	"time"
 
@@ -9,6 +10,25 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
+
+// Permission represents an atomic action a user can perform.
+type Permission struct {
+	ID          uint   `gorm:"primaryKey"`
+	Name        string `gorm:"type:varchar(100);uniqueIndex;not null"` // e.g., "users:create", "roles:manage"
+	Description string `gorm:"type:text"`
+}
+
+// Role is a collection of permissions that can be assigned to a user.
+type Role struct {
+	ID          uuid.UUID        `gorm:"type:uuid;primaryKey"`
+	TenantID    uuid.UUID        `gorm:"type:uuid;index:idx_tenant_role_name,unique"`
+	Name        string           `gorm:"type:varchar(100);index:idx_tenant_role_name,unique"`
+	Description string           `gorm:"type:text"`
+	Permissions []*Permission    `gorm:"many2many:role_permissions;"`
+	Users       []*FiduciaryUser `gorm:"many2many:fiduciary_user_roles;"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
 
 // -------------------------------
 // Admin and Organizational Models
@@ -20,7 +40,6 @@ type FiduciaryUser struct {
 	Phone               string    `gorm:"type:text;uniqueIndex"`
 	Name                string    `gorm:"type:text"`
 	PasswordHash        string    `gorm:"type:text"`
-	Role                string    `gorm:"type:varchar(20);default:'viewer'"` // E.g., admin, dpo, viewer
 	IsVerified          bool      `gorm:"default:false"`
 	VerificationToken   string    `gorm:"type:text;index"`
 	VerificationExpiry  time.Time
@@ -28,21 +47,77 @@ type FiduciaryUser struct {
 	PasswordResetExpiry time.Time
 	CreatedAt           time.Time `gorm:"autoCreateTime"`
 	LastSeen            time.Time `gorm:"autoUpdateTime"`
+	Roles               []*Role   `gorm:"many2many:fiduciary_user_roles;"`
 
-	// Permissions
-	CanManageConsent      bool `gorm:"default:false"`
-	CanManageGrievance    bool `gorm:"default:false"`
-	CanManagePurposes     bool `gorm:"default:false"`
-	CanManageAuditLogs    bool `gorm:"default:false"`
-	CanManageConsentForms bool `gorm:"default:false"`
+	// DEPRECATED: These will be replaced by the new RBAC system.
+	// Kept for a transitional period if needed, but new logic should not use them.
+	Role                  string `gorm:"type:varchar(20);default:'viewer'"` // E.g., superadmin, admin, dpo, viewer
+	CanManageConsent      bool   `gorm:"default:false"`
+	CanManageGrievance    bool   `gorm:"default:false"`
+	CanManagePurposes     bool   `gorm:"default:false"`
+	CanManageAuditLogs    bool   `gorm:"default:false"`
+	CanManageConsentForms bool   `gorm:"default:false"`
 }
+
+// HasPermission checks if a user has a specific permission through their roles.
+func (u *FiduciaryUser) HasPermission(permissionName string) bool {
+	for _, role := range u.Roles {
+		for _, p := range role.Permissions {
+			if p.Name == permissionName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ToClaims converts a FiduciaryUser to FiduciaryClaims for JWT generation.
+func (u *FiduciaryUser) ToClaims() *claims.FiduciaryClaims {
+	permissions := make(map[string]bool)
+	roleNames := []string{}
+	for _, role := range u.Roles {
+		roleNames = append(roleNames, role.Name)
+		for _, p := range role.Permissions {
+			permissions[p.Name] = true
+		}
+	}
+
+	return &claims.FiduciaryClaims{
+		FiduciaryID: u.ID.String(),
+		TenantID:    u.TenantID.String(),
+		Roles:       roleNames,
+		Permissions: permissions,
+		Role:        u.Role, // Deprecated
+		Type:        "fiduciary",
+	}
+}
+
+type OrganizationEntity struct {
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`
+	TenantID    uuid.UUID `gorm:"type:uuid;index"`
+	Name        string    `gorm:"type:text"`
+	TaxID       string    `gorm:"type:text"`
+	Website     string    `gorm:"type:text"`
+	Email       string    `gorm:"type:text;uniqueIndex"`
+	Phone       string    `gorm:"type:text"`
+	CompanySize string    `gorm:"type:text"`
+	Industry    string    `gorm:"type:text"`
+	Address     string    `gorm:"type:text"`
+	Country     string    `gorm:"type:text"`
+	CreatedAt   time.Time `gorm:"autoCreateTime"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
+}
+
+// -------------------------------
+// Data Principal (End-User) Models
+// -------------------------------
 
 // DataPrincipal represents the end-user (the data subject).
 type DataPrincipal struct {
 	ID                 uuid.UUID `gorm:"type:uuid;primaryKey"`
 	TenantID           uuid.UUID `gorm:"type:uuid;index"` // Link to the DF's tenant
 	ExternalID         string    `gorm:"type:text;index"` // ID from the fiduciary's system
-	Email              string    `gorm:"type:text;index"`
+	Email              string    `gorm:"type:text;uniqueIndex"`
 	Phone              string    `gorm:"type:text;index"`
 	FirstName          string    `gorm:"type:text"`
 	LastName           string    `gorm:"type:text"`
@@ -51,6 +126,11 @@ type DataPrincipal struct {
 	IsVerified         bool      `gorm:"default:false"`
 	VerificationToken  string    `gorm:"type:text;index"`
 	VerificationExpiry time.Time
+
+	// Password-related fields for user authentication
+	PasswordHash        string `gorm:"type:text"`
+	PasswordResetToken  string `gorm:"type:text"`
+	PasswordResetExpiry time.Time
 
 	// Guardian-related fields for minors
 	GuardianEmail              string `gorm:"type:text;index"`
@@ -67,7 +147,7 @@ type EncryptedDataPrincipal struct {
 	ID                 uuid.UUID `gorm:"type:uuid;primaryKey"`
 	TenantID           uuid.UUID `gorm:"type:uuid;index"` // Link to the DF's tenant
 	ExternalID         string    `gorm:"type:text;index"` // ID from the fiduciary's system
-	Email              string    `gorm:"type:text;index"`
+	Email              string    `gorm:"type:text;uniqueIndex"`
 	Phone              string    `gorm:"type:text;index"`
 	FirstName          string    `gorm:"type:text"`
 	LastName           string    `gorm:"type:text"`
@@ -76,6 +156,11 @@ type EncryptedDataPrincipal struct {
 	IsVerified         bool      `gorm:"default:false"`
 	VerificationToken  string    `gorm:"type:text;index"`
 	VerificationExpiry time.Time
+
+	// Password-related fields for user authentication
+	PasswordHash        string `gorm:"type:text"`
+	PasswordResetToken  string `gorm:"type:text"`
+	PasswordResetExpiry time.Time
 
 	// Guardian-related fields for minors
 	GuardianEmail              string `gorm:"type:text;index"`
@@ -330,7 +415,6 @@ type Tenant struct {
 	TenantID              uuid.UUID `gorm:"primaryKey"`
 	Name                  string
 	Cluster               string
-	Domain                string
 	Industry              string
 	CompanySize           string
 	Config                datatypes.JSON
@@ -360,21 +444,24 @@ type Vendor struct {
 // Consent Form Models
 // -------------------------------
 type ConsentForm struct {
-	ID                      uuid.UUID            `gorm:"type:uuid;primaryKey"`
-	TenantID                uuid.UUID            `gorm:"type:uuid;index"`
-	Name                    string               `gorm:"type:text"`
-	Title                   string               `gorm:"type:text"`
-	Description             string               `gorm:"type:text"`
-	DataCollectionAndUsage  string               `gorm:"type:text"`
-	DataSharingAndTransfers string               `gorm:"type:text"`
-	DataRetentionPeriod     string               `gorm:"type:text"`
-	UserRightsSummary       string               `gorm:"type:text"`
-	TermsAndConditions      string               `gorm:"type:text"`
-	PrivacyPolicy           string               `gorm:"type:text"`
-	Purposes                []ConsentFormPurpose `gorm:"foreignKey:ConsentFormID"`
-	Published               bool                 `gorm:"default:false"`
-	CreatedAt               time.Time            `gorm:"autoCreateTime"`
-	UpdatedAt               time.Time            `gorm:"autoUpdateTime"`
+	ID                   uuid.UUID            `gorm:"type:uuid;primaryKey"`
+	TenantID             uuid.UUID            `gorm:"type:uuid;index"`
+	Name                 string               `gorm:"type:text"`
+	Title                string               `gorm:"type:text"`
+	Description          string               `gorm:"type:text"`
+	Department           string               `gorm:"type:text"`
+	Project              string               `gorm:"type:text"`
+	OrganizationEntityID uuid.UUID            `gorm:"type:uuid;index"`
+	Purposes             []ConsentFormPurpose `gorm:"foreignKey:ConsentFormID"`
+	DataRetentionPeriod  string               `gorm:"type:text"`
+	UserRightsSummary    string               `gorm:"type:text"`
+	TermsAndConditions   string               `gorm:"type:text"`
+	PrivacyPolicy        string               `gorm:"type:text"`
+	Published            bool                 `gorm:"default:false"`
+	FormLink             string               `gorm:"type:text;uniqueIndex"`
+	FormSDK              string               `gorm:"type:text"`
+	CreatedAt            time.Time            `gorm:"autoCreateTime"`
+	UpdatedAt            time.Time            `gorm:"autoUpdateTime"`
 }
 
 type ConsentFormPurpose struct {
@@ -385,22 +472,6 @@ type ConsentFormPurpose struct {
 	DataObjects   pq.StringArray `gorm:"type:text[]"`
 	VendorIDs     pq.StringArray `gorm:"type:text[]"`
 	ExpiryInDays  int
-}
-
-// -------------------------------
-// OAuth Client Models
-// -------------------------------
-
-type OAuthClient struct {
-	ID           uuid.UUID      `gorm:"type:uuid;primaryKey"`
-	TenantID     uuid.UUID      `gorm:"type:uuid;index"`
-	ClientID     string         `gorm:"type:varchar(255);uniqueIndex"`
-	ClientSecret string         `gorm:"type:text"` // This will be a hash
-	AppName      string         `gorm:"type:text"`
-	Scopes       pq.StringArray `gorm:"type:text[]"`
-	Revoked      bool           `gorm:"default:false"`
-	CreatedAt    time.Time      `gorm:"autoCreateTime"`
-	UpdatedAt    time.Time      `gorm:"autoUpdateTime"`
 }
 
 // -------------------------------
@@ -482,4 +553,31 @@ func (b BreachNotification) BreachSeverity(severity string) string {
 	default:
 		return "Unknown"
 	}
+}
+
+// -------------------------------
+// Webhook Models
+// -------------------------------
+
+// Webhook stores configuration for a single webhook endpoint.
+type Webhook struct {
+	ID         uuid.UUID      `gorm:"type:uuid;primaryKey"`
+	TenantID   uuid.UUID      `gorm:"type:uuid;index"`
+	URL        string         `gorm:"type:text;not null"`
+	Secret     string         `gorm:"type:text;not null"` // Used to sign outgoing payloads
+	EventTypes pq.StringArray `gorm:"type:text[]"`        // e.g., ["consent.updated", "dsr.created"]
+	IsActive   bool           `gorm:"default:true"`
+	CreatedAt  time.Time      `gorm:"autoCreateTime"`
+	UpdatedAt  time.Time      `gorm:"autoUpdateTime"`
+}
+
+// WebhookEvent logs an attempt to send a webhook.
+type WebhookEvent struct {
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey"`
+	WebhookID   uuid.UUID `gorm:"type:uuid;index"`
+	EventType   string    `gorm:"type:varchar(100)"`
+	Payload     datatypes.JSON
+	Success     bool
+	Response    string `gorm:"type:text"`
+	AttemptedAt time.Time
 }

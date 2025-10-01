@@ -1,7 +1,7 @@
 nohup: ignoring input
-[90m2025-07-17T04:35:25Z[0m [32mINF[0m [1mencryption ready[0m [36mapp=[0mconsent-manager
-2025/07/17 04:35:25 ✅ Connected & configured Master DB
-2025/07/17 04:35:25 ✅ Connected & configured cluster us-east
-2025/07/17 04:35:25 ✅ Connected & configured cluster eu-west
-2025/07/17 04:35:25 ✅ Master DB migrations complete
-[90m2025-07-17T04:35:25Z[0m [32mINF[0m [1m🚀 Server starting on port 8080[0m [36mapp=[0mconsent-manager
+[90m2025-08-29T08:01:36Z[0m [32mINF[0m [1mencryption ready[0m [36mapp=[0mconsent-manager
+2025/08/29 08:01:36 Connected & configured Master DB
+2025/08/29 08:01:36 Master DB migrations complete
+[90m2025-08-29T08:01:36Z[0m [32mINF[0m [1mDatabase already seeded.[0m [36mapp=[0mconsent-manager
+[90m2025-08-29T08:01:36Z[0m [32mINF[0m [1mServer starting on port 8080[0m [36mapp=[0mconsent-manager
+signal: terminated

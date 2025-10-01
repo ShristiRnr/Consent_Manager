@@ -1,8 +1,9 @@
 package handlers
 
 import (
-	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
+	"consultrnr/consent-manager/internal/middlewares"
 	"consultrnr/consent-manager/internal/models"
 	"consultrnr/consent-manager/internal/services"
 	"encoding/json"
@@ -15,8 +16,8 @@ import (
 )
 
 type DataRequestHandler struct {
-	DB          *gorm.DB
-	DSRService  *services.DSRService
+	DB           *gorm.DB
+	DSRService   *services.DSRService
 	AuditService *services.AuditService
 }
 
@@ -26,7 +27,7 @@ func NewDataRequestHandler(db *gorm.DB, dsrService *services.DSRService, auditSe
 
 // ListAdminRequests lists all data requests for admins
 func (h *DataRequestHandler) ListAdminRequests(w http.ResponseWriter, r *http.Request) {
-	if _, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims); !ok {
+	if _, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims); !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -42,7 +43,7 @@ func (h *DataRequestHandler) ListAdminRequests(w http.ResponseWriter, r *http.Re
 
 // GetAdminRequestDetails retrieves details of a specific data request for admins
 func (h *DataRequestHandler) GetAdminRequestDetails(w http.ResponseWriter, r *http.Request) {
-	if _, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims); !ok {
+	if _, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims); !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -57,7 +58,7 @@ func (h *DataRequestHandler) GetAdminRequestDetails(w http.ResponseWriter, r *ht
 
 // ApproveRequest approves a data request
 func (h *DataRequestHandler) ApproveRequest(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -83,7 +84,7 @@ func (h *DataRequestHandler) ApproveRequest(w http.ResponseWriter, r *http.Reque
 		}
 
 		// Audit logging for data principal deletion
-		fiduciaryClaims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+		fiduciaryClaims := middlewares.GetFiduciaryAuthClaims(r.Context())
 		if ok && h.AuditService != nil {
 			fiduciaryID, _ := uuid.Parse(fiduciaryClaims.FiduciaryID)
 			tenantID, _ := uuid.Parse(fiduciaryClaims.TenantID)
@@ -109,7 +110,7 @@ func (h *DataRequestHandler) ApproveRequest(w http.ResponseWriter, r *http.Reque
 
 // RejectRequest rejects a data request
 func (h *DataRequestHandler) RejectRequest(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -131,7 +132,7 @@ func (h *DataRequestHandler) RejectRequest(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *DataRequestHandler) ListUserRequests(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -148,7 +149,7 @@ func (h *DataRequestHandler) ListUserRequests(w http.ResponseWriter, r *http.Req
 }
 
 func (h *DataRequestHandler) CreateUserRequest(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -188,7 +189,7 @@ func (h *DataRequestHandler) CreateUserRequest(w http.ResponseWriter, r *http.Re
 }
 
 func (h *DataRequestHandler) GetRequestDetails(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return

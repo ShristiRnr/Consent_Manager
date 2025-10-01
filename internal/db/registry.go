@@ -62,6 +62,8 @@ func GetTenantDB(schema string) (*gorm.DB, error) {
 	return loadTenantDB(schema, tenant.TenantID.String(), tenant.Cluster)
 }
 
+
+
 func loadTenantDB(schema, tenantID, cluster string) (*gorm.DB, error) {
 	log.Info().Str("tenant_id", tenantID).Str("cluster", cluster).Str("schema", schema).Msg("Loading tenant DB")
 	clusterDB, ok := Clusters[cluster]

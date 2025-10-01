@@ -32,7 +32,6 @@ func main() {
 	tenant := &models.Tenant{
 		TenantID:              tenantID,
 		Name:                  tenantName,
-		Domain:                fmt.Sprintf("%s.example.com", tenantName),
 		Cluster:               cluster,
 		ReviewFrequencyMonths: 6,
 	}

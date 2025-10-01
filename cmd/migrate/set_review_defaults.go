@@ -20,7 +20,12 @@ func main() {
 		log.Fatalf("❌ Failed to update tenants: %v", result.Error)
 	}
 
-	err := db.MasterDB.AutoMigrate(&models.ConsentForm{}, &models.ConsentFormPurpose{})
+	err := db.MasterDB.AutoMigrate(&models.ConsentForm{},
+		&models.ConsentFormPurpose{},
+		&models.FiduciaryUser{},
+		&models.OrganizationEntity{},
+		&models.DataPrincipal{},
+	)
 	if err != nil {
 		log.Fatalf("❌ Failed to migrate database: %v", err)
 	}

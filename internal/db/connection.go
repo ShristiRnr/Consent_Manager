@@ -32,39 +32,35 @@ func InitDB(cfg config.Config) {
 	MasterDB = master
 	log.Println("Connected & configured Master DB")
 
-	// HACK: Skip cluster connections for local development
-	// clusterConfigs := map[string]string{
-	// 	"us-east": cfg.DatabaseUSEastURL,
-	// 	"eu-west": cfg.DatabaseEUWestURL,
-	// }
-	// for name, dsn := range clusterConfigs {
-	// 	if dsn == "" {
-	// 		log.Printf("InitDB: skipping cluster %s (no URL provided)", name)
-	// 		continue
-	// 	}
+	clusterConfigs := map[string]string{
+		"us-east": cfg.DatabaseUSEastURL,
+		"eu-west": cfg.DatabaseEUWestURL,
+	}
+	for name, dsn := range clusterConfigs {
+		if dsn == "" {
+			log.Printf("InitDB: skipping cluster %s (no URL provided)", name)
+			continue
+		}
 
-	// 	dbConn, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	// 	if err != nil {
-	// 		log.Fatalf("InitDB: failed to connect to cluster %s DB: %v", name, err)
-	// 	}
-	// 	if err := dbConn.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`).Error; err != nil {
-	// 		log.Fatalf("InitDB: failed to enable uuid-ossp on cluster %s DB: %v", name, err)
-	// 	}
-	// 	Clusters[name] = dbConn
-	// 	log.Printf("Connected & configured cluster %s", name)
-	// }
+		dbConn, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		if err != nil {
+			log.Fatalf("InitDB: failed to connect to cluster %s DB: %v", name, err)
+		}
+		if err := dbConn.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`).Error; err != nil {
+			log.Fatalf("InitDB: failed to enable uuid-ossp on cluster %s DB: %v", name, err)
+		}
+		Clusters[name] = dbConn
+		log.Printf("Connected & configured cluster %s", name)
+	}
 
 	if err := MasterDB.AutoMigrate(
 		&models.Tenant{},
-		&models.AuditLog{},
 		&models.FiduciaryUser{},
+		&models.OrganizationEntity{},
 		&models.DataPrincipal{},
-		&models.OAuthClient{},
-		&models.DSRRequest{},
 		&models.UserTenantLink{},
 		&models.Notification{},
-		&models.APIKey{},
-		&models.BreachNotification{},
+		&models.Permission{}, 
 	); err != nil {
 		log.Fatalf("InitDB: public-schema migration failed on master: %v", err)
 	}

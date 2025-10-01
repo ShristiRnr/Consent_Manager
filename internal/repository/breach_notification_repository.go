@@ -2,12 +2,13 @@ package repository
 
 import (
 	"consultrnr/consent-manager/internal/models"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type BreachNotificationRepository struct {
-	db *gorm.DB
+	db            *gorm.DB
 	encryptedRepo *EncryptedBreachNotificationRepository
 }
 
@@ -29,4 +30,8 @@ func (r *BreachNotificationRepository) ListBreachNotifications(tenantID uuid.UUI
 
 func (r *BreachNotificationRepository) UpdateBreachNotification(notification *models.BreachNotification) error {
 	return r.encryptedRepo.UpdateBreachNotification(notification)
+}
+
+func (r *BreachNotificationRepository) DeleteBreachNotification(notificationID uuid.UUID) error {
+	return r.encryptedRepo.DeleteBreachNotification(notificationID)
 }

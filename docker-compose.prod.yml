@@ -1,0 +1,285 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Master Database
+  postgres-master:
+    image: postgres:15-alpine
+    container_name: arc-postgres-master
+    environment:
+      POSTGRES_DB: arc_consent_master
+      POSTGRES_USER: ${POSTGRES_USER:-arc_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_master_data:/var/lib/postgresql/data
+      - ./scripts/init-master.sql:/docker-entrypoint-initdb.d/init-master.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - arc-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arc_admin} -d arc_consent_master"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # PostgreSQL US-East Cluster
+  postgres-us-east:
+    image: postgres:15-alpine
+    container_name: arc-postgres-us-east
+    environment:
+      POSTGRES_DB: arc_consent_us_east
+      POSTGRES_USER: ${POSTGRES_USER:-arc_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_us_east_data:/var/lib/postgresql/data
+      - ./scripts/init-tenant.sql:/docker-entrypoint-initdb.d/init-tenant.sql
+    ports:
+      - "5433:5432"
+    networks:
+      - arc-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arc_admin} -d arc_consent_us_east"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # PostgreSQL EU-West Cluster
+  postgres-eu-west:
+    image: postgres:15-alpine
+    container_name: arc-postgres-eu-west
+    environment:
+      POSTGRES_DB: arc_consent_eu_west
+      POSTGRES_USER: ${POSTGRES_USER:-arc_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_eu_west_data:/var/lib/postgresql/data
+      - ./scripts/init-tenant.sql:/docker-entrypoint-initdb.d/init-tenant.sql
+    ports:
+      - "5434:5432"
+    networks:
+      - arc-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arc_admin} -d arc_consent_eu_west"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    container_name: arc-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - arc-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ARC Backend API Server
+  arc-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+      args:
+        - GO_VERSION=1.21
+    container_name: arc-backend
+    environment:
+      # Database Configuration
+      - DB_MASTER_HOST=postgres-master
+      - DB_MASTER_PORT=5432
+      - DB_MASTER_NAME=arc_consent_master
+      - DB_MASTER_USER=${POSTGRES_USER:-arc_admin}
+      - DB_MASTER_PASSWORD=${POSTGRES_PASSWORD}
+      
+      - DB_US_EAST_HOST=postgres-us-east
+      - DB_US_EAST_PORT=5432
+      - DB_US_EAST_NAME=arc_consent_us_east
+      - DB_US_EAST_USER=${POSTGRES_USER:-arc_admin}
+      - DB_US_EAST_PASSWORD=${POSTGRES_PASSWORD}
+      
+      - DB_EU_WEST_HOST=postgres-eu-west
+      - DB_EU_WEST_PORT=5432
+      - DB_EU_WEST_NAME=arc_consent_eu_west
+      - DB_EU_WEST_USER=${POSTGRES_USER:-arc_admin}
+      - DB_EU_WEST_PASSWORD=${POSTGRES_PASSWORD}
+      
+      # Redis Configuration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      
+      # Application Configuration
+      - PORT=8080
+      - ENV=production
+      - JWT_SECRET=${JWT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-https://app.arc-consent.com}
+      
+      # Email Configuration
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - FROM_EMAIL=${FROM_EMAIL}
+      
+      # Security Configuration
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://app.arc-consent.com,https://admin.arc-consent.com}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+      
+      # Monitoring
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - METRICS_ENABLED=true
+      - HEALTH_CHECK_ENABLED=true
+    ports:
+      - "8080:8080"
+    networks:
+      - arc-network
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+      postgres-us-east:
+        condition: service_healthy
+      postgres-eu-west:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - ./logs:/app/logs
+      - ./certs:/app/certs:ro
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: arc-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    networks:
+      - arc-network
+    depends_on:
+      - arc-backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: arc-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - arc-network
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: arc-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - arc-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Log aggregation with Loki
+  loki:
+    image: grafana/loki:latest
+    container_name: arc-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - arc-network
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+
+  # Log shipping with Promtail
+  promtail:
+    image: grafana/promtail:latest
+    container_name: arc-promtail
+    volumes:
+      - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      - ./logs:/var/log/arc:ro
+      - /var/log:/var/log/host:ro
+    networks:
+      - arc-network
+    depends_on:
+      - loki
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+
+volumes:
+  postgres_master_data:
+    driver: local
+  postgres_us_east_data:
+    driver: local
+  postgres_eu_west_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+
+networks:
+  arc-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

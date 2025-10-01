@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/models"
@@ -76,7 +76,7 @@ func GetTenantAuditLogsHandler() http.HandlerFunc {
 // middleware to inject tenantID and *gorm.DB into context
 func TenantContextMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+		claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 		if !ok || claims.TenantID == "" {
 			http.Error(w, "Unauthorized: missing tenant claim", http.StatusUnauthorized)
 			return

@@ -2,7 +2,7 @@
 package middlewares
 
 import (
-	jwtAuth "consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"context"
 	"crypto/rsa"
@@ -44,7 +44,7 @@ func JWTFiduciaryAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.H
 				return
 			}
 
-			claims := &jwtAuth.FiduciaryClaims{}
+			claims := &claims.FiduciaryClaims{}
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 				if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
@@ -78,7 +78,7 @@ func JWTDataPrincipalAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) ht
 				return
 			}
 
-			claims := &jwtAuth.DataPrincipalClaims{}
+			claims := &claims.DataPrincipalClaims{}
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 				if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
@@ -107,10 +107,10 @@ func JWTDataPrincipalAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) ht
 }
 
 // GetAuthClaims retrieves the DataPrincipalClaims previously set in context.
-func GetAuthClaims(r *http.Request) *jwtAuth.DataPrincipalClaims {
+func GetAuthClaims(r *http.Request) *claims.DataPrincipalClaims {
 	v := r.Context().Value(contextkeys.UserClaimsKey)
 	if v != nil {
-		if ac, ok := v.(*jwtAuth.DataPrincipalClaims); ok {
+		if ac, ok := v.(*claims.DataPrincipalClaims); ok {
 			return ac
 		}
 	}
@@ -119,19 +119,19 @@ func GetAuthClaims(r *http.Request) *jwtAuth.DataPrincipalClaims {
 }
 
 // GetClaimsFromContext retrieves the DataPrincipalClaims from the request context.
-func GetClaimsFromContext(ctx context.Context) *jwtAuth.DataPrincipalClaims {
+func GetClaimsFromContext(ctx context.Context) *claims.DataPrincipalClaims {
 	if v := ctx.Value(contextkeys.UserClaimsKey); v != nil {
-		if ac, ok := v.(*jwtAuth.DataPrincipalClaims); ok {
+		if ac, ok := v.(*claims.DataPrincipalClaims); ok {
 			return ac
 		}
 	}
 	return nil
 }
 
-func GetFiduciaryAuthClaims(ctx context.Context) *jwtAuth.FiduciaryClaims {
+func GetFiduciaryAuthClaims(ctx context.Context) *claims.FiduciaryClaims {
 	v := ctx.Value(contextkeys.FiduciaryClaimsKey)
 	if v != nil {
-		if ac, ok := v.(*jwtAuth.FiduciaryClaims); ok {
+		if ac, ok := v.(*claims.FiduciaryClaims); ok {
 			return ac
 		}
 	}

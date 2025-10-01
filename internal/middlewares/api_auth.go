@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	jwtAuth "consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -22,7 +22,7 @@ func APIAuthMiddleware(pubKey *rsa.PublicKey) func(http.Handler) http.Handler {
 				return
 			}
 
-			claims := &jwtAuth.FiduciaryClaims{}
+			claims := &claims.FiduciaryClaims{}
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 				if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])

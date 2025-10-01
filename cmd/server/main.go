@@ -3,7 +3,6 @@ package main
 import (
 	"consultrnr/consent-manager/config"
 	"consultrnr/consent-manager/internal/auth"
-	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/handlers"
 	"consultrnr/consent-manager/internal/middlewares"
@@ -13,42 +12,46 @@ import (
 	"consultrnr/consent-manager/pkg/encryption"
 	"consultrnr/consent-manager/pkg/jwtlink"
 	"consultrnr/consent-manager/pkg/log"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	muxHandlers "github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
+	"github.com/mvrilo/go-redoc"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"consultrnr/consent-manager/internal/models"
+
 	"github.com/google/uuid"
 
 	"gorm.io/gorm"
 )
 
-// ===== Fiduciary-only middleware =====
-func requireFiduciaryRole(roles ...string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
-			if !ok || claims == nil {
-				w.WriteHeader(http.StatusUnauthorized)
-				json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
-				return
-			}
-			for _, role := range roles {
-				if strings.EqualFold(claims.Role, role) {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden: insufficient role"})
-
-		})
+func seedPermissions(db *gorm.DB) {
+	permissions := []models.Permission{
+		{Name: "users:create", Description: "Can create new fiduciary users"},
+		{Name: "users:read", Description: "Can view fiduciary users"},
+		{Name: "users:update", Description: "Can update fiduciary users"},
+		{Name: "users:delete", Description: "Can delete fiduciary users"},
+		{Name: "users:impersonate", Description: "Can impersonate another user within the tenant"},
+		{Name: "roles:manage", Description: "Can create, update, and delete roles"},
+		{Name: "organizations:manage", Description: "Can manage organization entities"},
+		{Name: "consents:read", Description: "Can view consent records"},
+		{Name: "consents:update", Description: "Can update consent records"},
+		{Name: "purposes:manage", Description: "Can manage consent purposes"},
+		{Name: "consent-forms:manage", Description: "Can manage consent forms"},
+		{Name: "grievances:read", Description: "Can view grievances"},
+		{Name: "grievances:respond", Description: "Can respond to grievances"},
+		{Name: "audit-logs:read", Description: "Can view audit logs"},
+		{Name: "api-keys:manage", Description: "Can manage API keys"},
+		{Name: "breaches:manage", Description: "Can manage breach notifications"},
+		{Name: "dpas:manage", Description: "Can manage Data Processing Agreements"},
 	}
+
+	for _, p := range permissions {
+		db.FirstOrCreate(&p, models.Permission{Name: p.Name})
+	}
+	log.Logger.Info().Msg("Permissions seeded successfully.")
 }
 
 func seedDatabase(gormDB *gorm.DB) {
@@ -58,8 +61,8 @@ func seedDatabase(gormDB *gorm.DB) {
 	if tenantCount == 0 {
 		testTenantID := uuid.New()
 		defaultTenant := models.Tenant{
-			TenantID:   testTenantID,
-			Name: "Default Test Tenant",
+			TenantID: testTenantID,
+			Name:     "Default Test Tenant",
 		}
 		if err := gormDB.Create(&defaultTenant).Error; err != nil {
 			log.Logger.Fatal().Err(err).Msg("Failed to seed database with default tenant")
@@ -81,18 +84,17 @@ func main() {
 	log.Logger.Info().Msg("encryption ready")
 
 	// API Docs
-	/*
-	doc := &redoc.Redoc{
+	doc := redoc.Redoc{
 		Title:       "Consent Manager API",
 		Description: "Manage user consents, grievances & notifications",
-		SpecFile:    "docs/swagger.json",
-		SpecPath:    "/swagger/doc.json",
+		SpecFile:    "./cmd/server/docs/swagger.json",
+		SpecPath:    "/swagger.json",
 		DocsPath:    "/docs",
 	}
-	*/
 
 	// DB init
 	db.InitDB(cfg)
+	seedPermissions(db.MasterDB)
 	seedDatabase(db.MasterDB)
 
 	// Router & CORS
@@ -108,6 +110,13 @@ func main() {
 		muxHandlers.AllowCredentials(),
 	)
 
+	// Health & docs
+	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("OK"))
+	}).Methods("GET")
+	r.Handle(doc.DocsPath, doc.Handler())
+	r.Handle(doc.SpecPath, http.FileServer(http.Dir("./cmd/server/docs/")))
+
 	// Core repos/services/hub
 	consentRepo := repository.NewConsentRepository(db.MasterDB)
 	auditRepo := repository.NewAuditRepo(db.MasterDB)
@@ -119,6 +128,7 @@ func main() {
 	consentFormSvc := services.NewConsentFormService(consentFormRepo)
 	userConsentRepo := repository.NewUserConsentRepository(db.MasterDB)
 	userConsentSvc := services.NewUserConsentService(userConsentRepo, consentFormRepo)
+	webhookSvc := services.NewWebhookService(db.MasterDB)
 
 	// Breach Notification Service
 	breachNotificationRepo := repository.NewBreachNotificationRepository(db.MasterDB)
@@ -138,17 +148,6 @@ func main() {
 	emailService := services.NewEmailService(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass)
 	notificationPreferencesService := services.NewNotificationPreferencesService(notificationPreferencesRepo)
 	notificationService := services.NewNotificationService(notifRepo, notificationPreferencesRepo, emailService, hub, fiduciaryService)
-
-	// Health & docs
-	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("OK"))
-	}).Methods("GET")
-	/*
-	r.HandleFunc(doc.SpecPath, func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, doc.SpecFile)
-	}).Methods("GET")
-	r.Handle(doc.DocsPath, doc.Handler()).Methods("GET")
-	*/
 
 	// JWT keys
 	privateKey, err := auth.LoadPrivateKey("private.pem")
@@ -174,68 +173,73 @@ func main() {
 	}
 
 	// ==== AUTH: USER ====
+	r.Handle("/api/v1/auth/user/login", handlers.UserLoginHandler(db.MasterDB, cfg, privateKey)).Methods("POST")
+	r.Handle("/api/v1/auth/user/forgot-password", dataPrincipalAuth(handlers.UserForgotPasswordHandler(db.MasterDB, sendResetEmail))).Methods("POST")
+	r.Handle("/api/v1/auth/user/reset-password", dataPrincipalAuth(handlers.UserResetPasswordHandler(db.MasterDB))).Methods("POST")
+	r.Handle("/api/v1/auth/user/refresh", dataPrincipalAuth(handlers.UserRefreshHandler(db.MasterDB, cfg, privateKey, publicKey))).Methods("POST")
 	r.Handle("/api/v1/auth/user/logout", dataPrincipalAuth(handlers.UserLogoutHandler())).Methods("POST")
 	r.Handle("/api/v1/user/profile", dataPrincipalAuth(handlers.UpdateUserHandler(db.MasterDB, auditService))).Methods("PUT")
-	r.Handle("/api/v1/user/me", dataPrincipalAuth(handlers.UserMeHandler(db.MasterDB, auditService))).Methods("GET")
+	r.Handle("/api/v1/auth/user/me", dataPrincipalAuth(handlers.UserMeHandler(db.MasterDB, auditService))).Methods("GET")
 
-	// ==== FIDUCIARY AUTH ==== 
+	// ==== FIDUCIARY AUTH ====
 	authRouter := r.PathPrefix("/api/v1/auth/fiduciary").Subrouter()
 	authRouter.HandleFunc("/login", handlers.FiduciaryLoginHandler(db.MasterDB, cfg, privateKey)).Methods("POST")
 	authRouter.HandleFunc("/refresh", handlers.FiduciaryRefreshHandler(db.MasterDB, cfg, privateKey, publicKey)).Methods("POST")
-	authRouter.Handle("/me", fiduciaryAuth(handlers.FiduciaryMeHandler())).Methods("GET")
+	authRouter.Handle("/me", fiduciaryAuth(handlers.FiduciaryMeHandler(db.MasterDB))).Methods("GET")
 	authRouter.HandleFunc("/forgot-password", handlers.FiduciaryForgotPasswordHandler(db.MasterDB, sendResetEmail)).Methods("POST")
 	authRouter.HandleFunc("/reset-password", handlers.FiduciaryResetPasswordHandler(db.MasterDB)).Methods("POST")
 	authRouter.HandleFunc("/logout", handlers.FiduciaryLogoutHandler()).Methods("POST")
 
-	// ==== DATA PRINCIPAL MANAGEMENT BY FIDUCIARY ==== 
+	// ==== ORGANIZATION MANAGEMENT ====
+	orgRepo := repository.NewOrganizationRepository(db.MasterDB)
+	orgService := services.NewOrganizationService(orgRepo)
+	orgHandler := handlers.NewOrganizationHandler(orgService, orgRepo)
+
+	// Public or all-authenticated users can list/get organization details
+	r.Handle("/public/api/v1/organizations", http.HandlerFunc(orgHandler.ListOrganizations)).Methods("GET")
+	r.Handle("/public/api/v1/organizations/{id}", http.HandlerFunc(orgHandler.GetOrganizationByID)).Methods("GET")
+	r.Handle("/public/api/v1/organizations/name/{name}", http.HandlerFunc(orgHandler.GetOrganizationByName)).Methods("GET")
+	r.Handle("/public/api/v1/organizations/industry/{industry}", http.HandlerFunc(orgHandler.GetOrganizationsByIndustry)).Methods("GET")
+
+	// Fiduciary & Superadmin can create/update/delete
+	r.Handle("/api/v1/fiduciary/organizations", fiduciaryAuth(middlewares.RequirePermission("organizations:manage")(http.HandlerFunc(orgHandler.CreateOrganization)))).Methods("POST")
+	r.Handle("/api/v1/fiduciary/organizations/{id}", fiduciaryAuth(middlewares.RequirePermission("organizations:manage")(http.HandlerFunc(orgHandler.UpdateOrganization)))).Methods("PUT")
+	r.Handle("/api/v1/fiduciary/organizations/{id}", fiduciaryAuth(middlewares.RequirePermission("organizations:manage")(http.HandlerFunc(orgHandler.DeleteOrganization)))).Methods("DELETE")
+
+	// ==== DATA PRINCIPAL MANAGEMENT BY FIDUCIARY ====
 	adminUserRouter := r.PathPrefix("/api/v1/fiduciary/users").Subrouter()
 	adminUserRouter.Use(fiduciaryAuth)
 	adminUserRouter.HandleFunc("", handlers.FiduciaryCreateUserHandler(db.MasterDB, auditService)).Methods("POST")
+	adminUserRouter.HandleFunc("/identify", handlers.IdentifyUserHandler(db.MasterDB)).Methods("POST")
+	adminUserRouter.Handle("/{userId}/impersonate", requirePerm("users:impersonate")(handlers.ImpersonateUserHandler(db.MasterDB, auditService, privateKey, cfg.AdminTokenTTL))).Methods("POST")
 
-	// ==== SIGNUP ==== 
-	signupHandler := handlers.NewSignupHandler(db.MasterDB, cfg, emailService, auditService)
+	// ==== SIGNUP ====
+	signupHandler := handlers.NewSignupHandler(db.MasterDB, cfg, orgService, emailService, auditService)
 	r.HandleFunc("/api/v1/auth/user/signup", signupHandler.SignupDataPrincipal).Methods("POST")
 	r.HandleFunc("/api/v1/auth/fiduciary/signup", signupHandler.SignupFiduciary).Methods("POST")
 	r.HandleFunc("/api/v1/auth/verify-guardian", signupHandler.VerifyGuardian).Methods("GET")
 
-	// ==== TEST: USERMANAGEMENT PERMISSION ====
-	r.Handle("/api/v1/fiduciary/usermanagement-test",
-		fiduciaryAuth(requirePerm("usermanagement")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims := r.Context().Value(contextkeys.FiduciaryClaimsKey)
-			role := "unknown"
-			if ac, ok := claims.(*auth.FiduciaryClaims); ok {
-				role = ac.Role
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"message": "Access granted to usermanagement module",
-				"module":  "usermanagement",
-				"role":    role,
-			})
-		}))),
-	).Methods("GET")
-
 	// ==== CONSENT ====
-	consentHandler := handlers.NewConsentHandler(consentSvc, auditService)
-	consentHandler.RegisterRoutes(r, db.MasterDB)
+	consentHandler := handlers.NewConsentHandler(consentSvc, auditService) // TODO: This needs refactoring
+	consentHandler.RegisterRoutes(r, db.MasterDB)                          // TODO: This needs refactoring
 
 	// ==== PARTNER API ====
 	partnerR := r.PathPrefix("/api/v1/partner").Subrouter()
 	partnerR.HandleFunc("/consents", func(w http.ResponseWriter, r *http.Request) {
-		apiKeyAuth(http.HandlerFunc(handlers.PartnerGetConsentsHandler)).ServeHTTP(w, r)
+		apiKeyAuth(http.HandlerFunc(handlers.PartnerGetConsentsHandler)).ServeHTTP(w, r) // TODO: This needs refactoring
 	}).Methods("GET")
 
 	// ==== USER DSR ====
 	DSRhandlers := handlers.NewDataRequestHandler(db.MasterDB, dsrService, auditService)
-	r.Handle("/api/v1/user/requests", dataPrincipalAuth(requirePerm("consent")(http.HandlerFunc(DSRhandlers.ListUserRequests)))).Methods("GET")
-	r.Handle("/api/v1/user/requests", dataPrincipalAuth(requirePerm("consent")(http.HandlerFunc(DSRhandlers.CreateUserRequest)))).Methods("POST")
-	r.Handle("/api/v1/user/requests/{id}", dataPrincipalAuth(requirePerm("consent")(http.HandlerFunc(DSRhandlers.GetRequestDetails)))).Methods("GET")
+	r.Handle("/api/v1/user/requests", dataPrincipalAuth(http.HandlerFunc(DSRhandlers.ListUserRequests))).Methods("GET")
+	r.Handle("/api/v1/user/requests", dataPrincipalAuth(http.HandlerFunc(DSRhandlers.CreateUserRequest))).Methods("POST")
+	r.Handle("/api/v1/user/requests/{id}", dataPrincipalAuth(http.HandlerFunc(DSRhandlers.GetRequestDetails))).Methods("GET")
 
 	// ==== FIDUCIARY DSR ====
-	r.Handle("/api/v1/fiduciary/requests", fiduciaryAuth(requirePerm("consent")(http.HandlerFunc(DSRhandlers.ListAdminRequests)))).Methods("GET")
-	r.Handle("/api/v1/fiduciary/requests/{id}", fiduciaryAuth(requirePerm("consent")(http.HandlerFunc(DSRhandlers.GetAdminRequestDetails)))).Methods("GET")
-	r.Handle("/api/v1/fiduciary/requests/{id}/approve", fiduciaryAuth(requirePerm("consent")(http.HandlerFunc(DSRhandlers.ApproveRequest)))).Methods("POST")
-	r.Handle("/api/v1/fiduciary/requests/{id}/reject", fiduciaryAuth(requirePerm("consent")(http.HandlerFunc(DSRhandlers.RejectRequest)))).Methods("POST")
+	r.Handle("/api/v1/fiduciary/requests", fiduciaryAuth(middlewares.RequirePermission("consents:read")(http.HandlerFunc(DSRhandlers.ListAdminRequests)))).Methods("GET")
+	r.Handle("/api/v1/fiduciary/requests/{id}", fiduciaryAuth(middlewares.RequirePermission("consents:read")(http.HandlerFunc(DSRhandlers.GetAdminRequestDetails)))).Methods("GET")
+	r.Handle("/api/v1/fiduciary/requests/{id}/approve", fiduciaryAuth(middlewares.RequirePermission("consents:update")(http.HandlerFunc(DSRhandlers.ApproveRequest)))).Methods("POST")
+	r.Handle("/api/v1/fiduciary/requests/{id}/reject", fiduciaryAuth(middlewares.RequirePermission("consents:update")(http.HandlerFunc(DSRhandlers.RejectRequest)))).Methods("POST")
 
 	// ==== PURPOSES ====
 	purposeHandler := handlers.NewPurposeHandler(db.MasterDB)
@@ -253,37 +257,37 @@ func main() {
 	userPurposeRouter.HandleFunc("/tenant/{tenantID}", handlers.UserGetPurposeByTenant()).Methods("GET")
 
 	// ==== API KEYS ====
-	r.Handle("/api/v1/fiduciary/api-keys", fiduciaryAuth(requirePerm("usermanagement")(http.HandlerFunc(handlers.CreateAPIKeyHandler(db.MasterDB, publicKey))))).Methods("POST")
-	r.Handle("/api/v1/fiduciary/api-keys", fiduciaryAuth(requirePerm("usermanagement")(http.HandlerFunc(handlers.ListAPIKeysHandler(db.MasterDB, publicKey))))).Methods("GET")
-	r.Handle("/api/v1/fiduciary/api-keys/revoke", fiduciaryAuth(requirePerm("usermanagement")(http.HandlerFunc(handlers.RevokeAPIKeyHandler(db.MasterDB, publicKey))))).Methods("PUT")
+	r.Handle("/api/v1/fiduciary/api-keys", fiduciaryAuth(middlewares.RequirePermission("api-keys:manage")(http.HandlerFunc(handlers.CreateAPIKeyHandler(db.MasterDB, publicKey))))).Methods("POST")
+	r.Handle("/api/v1/fiduciary/api-keys", fiduciaryAuth(middlewares.RequirePermission("api-keys:manage")(http.HandlerFunc(handlers.ListAPIKeysHandler(db.MasterDB, publicKey))))).Methods("GET")
+	r.Handle("/api/v1/fiduciary/api-keys/revoke", fiduciaryAuth(middlewares.RequirePermission("api-keys:manage")(http.HandlerFunc(handlers.RevokeAPIKeyHandler(db.MasterDB, publicKey))))).Methods("PUT")
 
 	// ==== TENANT SETTINGS ====
-	r.Handle("/api/v1/fiduciary/tenant/settings", fiduciaryAuth(requirePerm("usermanagement")(http.HandlerFunc(handlers.UpdateTenantSettingsHandler(db.MasterDB))))).Methods("PUT")
+	r.Handle("/api/v1/fiduciary/tenant/settings", fiduciaryAuth(middlewares.RequirePermission("roles:manage")(http.HandlerFunc(handlers.UpdateTenantSettingsHandler(db.MasterDB))))).Methods("PUT")
 
 	// ==== AUDIT LOGS ====
 	fiduciaryGR := r.PathPrefix("/api/v1/fiduciary").Subrouter()
 	fiduciaryGR.Use(fiduciaryAuth)
-	fiduciaryGR.Use(requirePerm("auditlogs"))
+	fiduciaryGR.Use(middlewares.RequirePermission("audit-logs:read"))
 	fiduciaryGR.Use(handlers.TenantContextMiddleware)
 	fiduciaryGR.HandleFunc("/audit/logs", handlers.GetTenantAuditLogsHandler()).Methods("GET")
 
 	// ==== GRIEVANCES ====
 	grievHandler := handlers.NewGrievanceHandler(notificationService, hub, auditService)
-	r.Handle("/api/v1/dashboard/grievances", dataPrincipalAuth(requirePerm("grievance")(http.HandlerFunc(grievHandler.Create)))).Methods("POST")
-	r.Handle("/api/v1/dashboard/grievances", dataPrincipalAuth(requirePerm("grievance")(http.HandlerFunc(grievHandler.ListForUser)))).Methods("GET")
+	r.Handle("/api/v1/dashboard/grievances", dataPrincipalAuth(http.HandlerFunc(grievHandler.Create))).Methods("POST")
+	r.Handle("/api/v1/dashboard/grievances", dataPrincipalAuth(http.HandlerFunc(grievHandler.ListForUser))).Methods("GET")
 
 	fiduciaryGR.Use(fiduciaryAuth)
-	fiduciaryGR.Handle("/grievances", requirePerm("grievance")(http.HandlerFunc(grievHandler.List))).Methods("GET")
-	fiduciaryGR.Handle("/grievances/{id}", requirePerm("grievance")(http.HandlerFunc(grievHandler.Update))).Methods("PUT")
+	fiduciaryGR.Handle("/grievances", middlewares.RequirePermission("grievances:read")(http.HandlerFunc(grievHandler.List))).Methods("GET")
+	fiduciaryGR.Handle("/grievances/{id}", middlewares.RequirePermission("grievances:respond")(http.HandlerFunc(grievHandler.Update))).Methods("PUT")
 
 	// ===== Grievance Comments =====
-	r.Handle("/api/v1/dashboard/grievances/{id}/comments", dataPrincipalAuth(requirePerm("grievance")(http.HandlerFunc(grievHandler.AddComment)))).Methods("POST")
-	r.Handle("/api/v1/dashboard/grievances/{id}/comments", dataPrincipalAuth(requirePerm("grievance")(http.HandlerFunc(grievHandler.GetComments)))).Methods("GET")
-	r.Handle("/api/v1/dashboard/grievances/comments/{commentID}", dataPrincipalAuth(requirePerm("grievance")(http.HandlerFunc(grievHandler.DeleteComment)))).Methods("DELETE")
+	r.Handle("/api/v1/dashboard/grievances/{id}/comments", dataPrincipalAuth(http.HandlerFunc(grievHandler.AddComment))).Methods("POST")
+	r.Handle("/api/v1/dashboard/grievances/{id}/comments", dataPrincipalAuth(http.HandlerFunc(grievHandler.GetComments))).Methods("GET")
+	r.Handle("/api/v1/dashboard/grievances/comments/{commentID}", dataPrincipalAuth(http.HandlerFunc(grievHandler.DeleteComment))).Methods("DELETE")
 
-	fiduciaryGR.Handle("/grievances/{id}/comments", requirePerm("grievance")(http.HandlerFunc(grievHandler.AddComment))).Methods("POST")
-	fiduciaryGR.Handle("/grievances/{id}/comments", requirePerm("grievance")(http.HandlerFunc(grievHandler.GetComments))).Methods("GET")
-	fiduciaryGR.Handle("/grievances/comments/{commentID}", requirePerm("grievance")(http.HandlerFunc(grievHandler.DeleteComment))).Methods("DELETE")
+	fiduciaryGR.Handle("/grievances/{id}/comments", middlewares.RequirePermission("grievances:respond")(http.HandlerFunc(grievHandler.AddComment))).Methods("POST")
+	fiduciaryGR.Handle("/grievances/{id}/comments", middlewares.RequirePermission("grievances:read")(http.HandlerFunc(grievHandler.GetComments))).Methods("GET")
+	fiduciaryGR.Handle("/grievances/comments/{commentID}", middlewares.RequirePermission("grievances:respond")(http.HandlerFunc(grievHandler.DeleteComment))).Methods("DELETE")
 
 	// ==== VENDOR ====
 	vendorRepo := repository.NewVendorRepository(db.MasterDB)
@@ -295,9 +299,9 @@ func main() {
 	r.Handle("/api/v1/vendors/{id}", dataPrincipalAuth(http.HandlerFunc(vendorHandler.GetVendorByID))).Methods("GET")
 
 	// Fiduciary & Superadmin can create/update/delete
-	r.Handle("/api/v1/fiduciary/vendors", fiduciaryAuth(requireFiduciaryRole("admin", "superadmin")(http.HandlerFunc(vendorHandler.CreateVendor)))).Methods("POST")
-	r.Handle("/api/v1/fiduciary/vendors/{id}", fiduciaryAuth(requireFiduciaryRole("admin", "superadmin")(http.HandlerFunc(vendorHandler.UpdateVendor)))).Methods("PUT")
-	r.Handle("/api/v1/fiduciary/vendors/{id}", fiduciaryAuth(requireFiduciaryRole("admin", "superadmin")(http.HandlerFunc(vendorHandler.DeleteVendor)))).Methods("DELETE")
+	r.Handle("/api/v1/fiduciary/vendors", fiduciaryAuth(middlewares.RequirePermission("dpas:manage")(http.HandlerFunc(vendorHandler.CreateVendor)))).Methods("POST")
+	r.Handle("/api/v1/fiduciary/vendors/{id}", fiduciaryAuth(middlewares.RequirePermission("dpas:manage")(http.HandlerFunc(vendorHandler.UpdateVendor)))).Methods("PUT")
+	r.Handle("/api/v1/fiduciary/vendors/{id}", fiduciaryAuth(middlewares.RequirePermission("dpas:manage")(http.HandlerFunc(vendorHandler.DeleteVendor)))).Methods("DELETE")
 
 	// ==== CONSENT FORMS ==== (managed by fiduciary)
 	consentFormHandler := handlers.NewConsentFormHandler(consentFormSvc, auditService)
@@ -316,7 +320,7 @@ func main() {
 	consentFormRouter.HandleFunc("/{formId}/integration", http.HandlerFunc(consentFormHandler.GetIntegrationScript)).Methods("GET")
 
 	// ==== PUBLIC CONSENT FLOW ====
-	publicConsentHandler := handlers.NewPublicConsentHandler(userConsentSvc, consentFormSvc)
+	publicConsentHandler := handlers.NewPublicConsentHandler(userConsentSvc, consentFormSvc, webhookSvc)
 	publicConsentRouter := r.PathPrefix("/api/v1/public/consent-forms").Subrouter()
 	publicConsentRouter.Use(apiKeyAuth)
 	publicConsentRouter.HandleFunc("/{formId}", http.HandlerFunc(publicConsentHandler.GetConsentForm)).Methods("GET")
@@ -336,44 +340,67 @@ func main() {
 	notificationPreferencesRouter.Handle("", http.HandlerFunc(notificationPreferencesHandler.Update)).Methods("PUT")
 
 	// ==== FIDUCIARY MANAGEMENT ====
-	fiduciaryManagementRouter := r.PathPrefix("/api/v1/fiduciary/fiduciaries").Subrouter()
-	fiduciaryManagementRouter.Use(fiduciaryAuth)
-	fiduciaryManagementRouter.Use(requireFiduciaryRole("admin", "superadmin"))
-	fiduciaryManagementRouter.Handle("", http.HandlerFunc(handlers.ListAllFiduciariesHandler(fiduciaryService))).Methods("GET")
-	fiduciaryManagementRouter.Handle("", http.HandlerFunc(handlers.CreateNewFiduciaryHandler(fiduciaryService))).Methods("POST")
-	fiduciaryManagementRouter.Handle("/stats", http.HandlerFunc(handlers.FiduciaryStatsHandler(fiduciaryService))).Methods("GET")
-	fiduciaryManagementRouter.Handle("/{fiduciaryId}", http.HandlerFunc(handlers.GetFiduciaryByIDHandler(fiduciaryService))).Methods("GET")
-	fiduciaryManagementRouter.Handle("/{fiduciaryId}", http.HandlerFunc(handlers.UpdateFiduciaryDataHandler(fiduciaryService))).Methods("PUT")
-	fiduciaryManagementRouter.Handle("/{fiduciaryId}", http.HandlerFunc(handlers.DeleteFiduciaryByIDHandler(fiduciaryService))).Methods("DELETE")
+	fiduciaryManagementRouter := r.PathPrefix("/api/v1/fiduciaries").Subrouter()
+	fiduciaryManagementRouter.Use(fiduciaryAuth, middlewares.RequirePermission("users:read", "users:create", "users:update", "users:delete"))
+	fiduciaryManagementRouter.HandleFunc("", handlers.ListAllFiduciariesHandler(fiduciaryService)).Methods("GET")
+	fiduciaryManagementRouter.HandleFunc("", handlers.CreateNewFiduciaryHandler(fiduciaryService)).Methods("POST")
+	fiduciaryManagementRouter.HandleFunc("/stats", handlers.FiduciaryStatsHandler(fiduciaryService)).Methods("GET")
+	fiduciaryManagementRouter.HandleFunc("/{fiduciaryId}", handlers.GetFiduciaryByIDHandler(fiduciaryService)).Methods("GET")
+	fiduciaryManagementRouter.HandleFunc("/{fiduciaryId}", handlers.UpdateFiduciaryDataHandler(fiduciaryService)).Methods("PUT")
+	fiduciaryManagementRouter.HandleFunc("/{fiduciaryId}", handlers.DeleteFiduciaryByIDHandler(fiduciaryService)).Methods("DELETE")
+
+	// === CONSENT MANAGEMENT FOR FIDUCIARY ===
+	consentManagementRouter := r.PathPrefix("/api/v1/fiduciary/consents").Subrouter()
+	consentManagementRouter.Use(fiduciaryAuth)
+	consentManagementRouter.HandleFunc("", handlers.ListConsentsHandler(consentSvc)).Methods("GET")
+	consentManagementRouter.HandleFunc("/stats", consentHandler.GetConsentStats).Methods("GET")
+	consentManagementRouter.HandleFunc("/{consentId}", handlers.GetConsentByIDHandler(consentSvc)).Methods("GET")
 
 	// ==== BREACH NOTIFICATIONS ====
 	breachNotificationHandler := handlers.NewBreachNotificationHandler(breachNotificationSvc, auditService)
 	breachNotificationRouter := r.PathPrefix("/api/v1/fiduciary/breach-notifications").Subrouter()
-	breachNotificationRouter.Use(fiduciaryAuth)
-	breachNotificationRouter.Use(requireFiduciaryRole("admin", "superadmin"))
+	breachNotificationRouter.Use(fiduciaryAuth, middlewares.RequirePermission("breaches:manage"))
 	breachNotificationRouter.Handle("", http.HandlerFunc(breachNotificationHandler.CreateBreachNotification)).Methods("POST")
 	breachNotificationRouter.Handle("", http.HandlerFunc(breachNotificationHandler.ListBreachNotifications)).Methods("GET")
+	breachNotificationRouter.Handle("/stats", http.HandlerFunc(breachNotificationHandler.GetBreachStats)).Methods("GET")
 	breachNotificationRouter.Handle("/{notificationId}", http.HandlerFunc(breachNotificationHandler.GetBreachNotification)).Methods("GET")
+	breachNotificationRouter.Handle("/{notificationId}", http.HandlerFunc(breachNotificationHandler.UpdateBreachNotification)).Methods("PUT")
+	breachNotificationRouter.Handle("/{notificationId}", http.HandlerFunc(breachNotificationHandler.DeleteBreachNotification)).Methods("DELETE")
 
 	// ==== DATA PROCESSING AGREEMENTS ====
 	dpaHandler := handlers.NewDPAHandler(db.MasterDB, auditService)
 	dpaRouter := r.PathPrefix("/api/v1/fiduciary/dpas").Subrouter()
-	dpaRouter.Use(fiduciaryAuth)
-	dpaRouter.Use(requireFiduciaryRole("admin", "superadmin"))
+	dpaRouter.Use(fiduciaryAuth, middlewares.RequirePermission("dpas:manage"))
 	dpaHandler.RegisterRoutes(dpaRouter)
 
-	// ==== OAUTH 2.0 & PUBLIC API ====
-	r.HandleFunc("/oauth/token", handlers.OAuthTokenHandler(db.MasterDB, privateKey)).Methods("POST")
+	// ==== RBAC MANAGEMENT (Roles, Permissions) ====
+	rbacHandler := handlers.NewRBACHandler(db.MasterDB)
+	rbacRouter := r.PathPrefix("/api/v1/fiduciary").Subrouter()
+	rbacRouter.Use(fiduciaryAuth, middlewares.RequirePermission("roles:manage"))
+	rbacRouter.HandleFunc("/permissions", rbacHandler.ListPermissions).Methods("GET")
+	rbacRouter.HandleFunc("/roles", rbacHandler.ListRoles).Methods("GET")
+	rbacRouter.HandleFunc("/roles", rbacHandler.CreateRole).Methods("POST")
+	rbacRouter.HandleFunc("/roles/{roleId}", rbacHandler.UpdateRole).Methods("PUT")
+	rbacRouter.HandleFunc("/roles/{roleId}", rbacHandler.DeleteRole).Methods("DELETE")
+	rbacRouter.HandleFunc("/users/{userId}/roles", rbacHandler.AssignRolesToUser).Methods("PUT")
 
-	oauthClientRouter := r.PathPrefix("/api/v1/fiduciary/oauth-clients").Subrouter()
-	oauthClientRouter.Use(fiduciaryAuth)
-	oauthClientRouter.HandleFunc("", handlers.CreateOAuthClientHandler(db.MasterDB, publicKey)).Methods("POST")
-	oauthClientRouter.HandleFunc("", handlers.ListOAuthClientsHandler(db.MasterDB, publicKey)).Methods("GET")
-	oauthClientRouter.HandleFunc("", handlers.RevokeOAuthClientHandler(db.MasterDB, publicKey)).Methods("DELETE")
-
-	apiAuth := middlewares.APIAuthMiddleware(publicKey)
+	// ==== PUBLIC API ====
 	publicApiRouter := r.PathPrefix("/api/v1/public").Subrouter()
-	publicApiRouter.Use(apiAuth)
+	publicApiRouter.Use(apiKeyAuth)
+	publicAPIHandler := handlers.NewPublicAPIHandler(db.MasterDB, dsrService, userConsentSvc, auditService, webhookSvc)
+	publicApiRouter.HandleFunc("/users", publicAPIHandler.CreateDataPrincipal).Methods("POST")
+	publicApiRouter.HandleFunc("/users/{userId}/consents", publicAPIHandler.GetDataPrincipalConsents).Methods("GET")
+	publicApiRouter.HandleFunc("/consents/verify", publicAPIHandler.VerifyConsents).Methods("POST")
+	publicApiRouter.HandleFunc("/consents/submit", publicAPIHandler.SubmitConsentViaAPI).Methods("POST")
+	publicApiRouter.HandleFunc("/dsr", publicAPIHandler.CreateDSR).Methods("POST")
+
+	// ==== WEBHOOK MANAGEMENT ====
+	webhookHandler := handlers.NewWebhookHandler(db.MasterDB)
+	webhookRouter := r.PathPrefix("/api/v1/fiduciary/webhooks").Subrouter()
+	webhookRouter.Use(fiduciaryAuth, middlewares.RequirePermission("roles:manage")) // Reuse a high-level permission
+	webhookRouter.HandleFunc("", webhookHandler.CreateWebhook).Methods("POST")
+	webhookRouter.HandleFunc("", webhookHandler.ListWebhooks).Methods("GET")
+	webhookRouter.HandleFunc("/{webhookId}", webhookHandler.DeleteWebhook).Methods("DELETE")
 
 	// ==== REVIEW TOKEN & METRICS ====
 	r.HandleFunc("/api/v1/review", handlers.ReviewTokenHandler(db.MasterDB, publicKey)).Methods("GET")

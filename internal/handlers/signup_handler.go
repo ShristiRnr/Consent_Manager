@@ -2,9 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
+	logger "log"
 	"net/http"
 	"regexp"
 	"time"
+
+	"consultrnr/consent-manager/internal/db"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -17,24 +21,36 @@ import (
 	"consultrnr/consent-manager/pkg/log"
 )
 
+type Organization struct {
+	Name        string `json:"name"`
+	Industry    string `json:"industry"`
+	CompanySize string `json:"companySize"`
+	TaxID       string `json:"taxId,omitempty"`
+	Website     string `json:"website,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Phone       string `json:"phone,omitempty"`
+	Address     string `json:"address,omitempty"`
+	Country     string `json:"country,omitempty"`
+}
+
 // FiduciarySignupRequest defines the shape of a signup request for a DF user.
 // This user will manage a tenant and have specific permissions.
 type FiduciarySignupRequest struct {
-	Email       string `json:"email"`
-	Name        string `json:"name"`
-	Phone       string `json:"phone"`
-	Password    string `json:"password"`
-	Role        string `json:"role"` // E.g., 'admin', 'dpo'
-	CompanyName string `json:"companyName"`
-	Domain      string `json:"domain"`
-	Industry    string `json:"industry"`
-	CompanySize string `json:"companySize"`
+	Email        string       `json:"email"`
+	FirstName    string       `json:"firstName"`
+	LastName     string       `json:"lastName"`
+	Phone        string       `json:"phone"`
+	Password     string       `json:"password"`
+	ConfirmPass  string       `json:"confirmPassword"`
+	Role         string       `json:"role"`
+	Organization Organization `json:"organization"`
 }
 
 // DataPrincipalSignupRequest defines the shape of a signup request for a DP user.
 // This user is the data subject and is created by a Fiduciary.
 type DataPrincipalSignupRequest struct {
 	Email         string `json:"email"`
+	Password      string `json:"password"`
 	FirstName     string `json:"firstName"`
 	LastName      string `json:"lastName"`
 	Age           int    `json:"age"`
@@ -44,91 +60,209 @@ type DataPrincipalSignupRequest struct {
 }
 
 type SignupHandler struct {
-	MasterDB     *gorm.DB
-	Cfg          config.Config
-	EmailService *services.EmailService
-	AuditService *services.AuditService
+	MasterDB            *gorm.DB
+	Cfg                 config.Config
+	OrganizationService *services.OrganizationService
+	EmailService        *services.EmailService
+	AuditService        *services.AuditService
 }
 
-func NewSignupHandler(masterDB *gorm.DB, cfg config.Config, emailService *services.EmailService, auditService *services.AuditService) *SignupHandler {
-	return &SignupHandler{MasterDB: masterDB, Cfg: cfg, EmailService: emailService, AuditService: auditService}
+func NewSignupHandler(
+	masterDB *gorm.DB,
+	cfg config.Config,
+	organizationService *services.OrganizationService, // Add this parameter
+	emailService *services.EmailService,
+	auditService *services.AuditService,
+) *SignupHandler {
+	return &SignupHandler{
+		MasterDB:            masterDB,
+		Cfg:                 cfg,
+		OrganizationService: organizationService, // Assign the new parameter
+		EmailService:        emailService,
+		AuditService:        auditService,
+	}
 }
 
 // SignupFiduciary handles the creation of a new tenant and its first admin user (a FiduciaryUser).
 func (h *SignupHandler) SignupFiduciary(w http.ResponseWriter, r *http.Request) {
 	var req FiduciarySignupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Logger.Error().Err(err).Msg("Invalid request body for fiduciary signup")
 		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	if !validateFiduciaryRequest(&req, w) {
+		log.Logger.Error().Msg("Fiduciary signup validation failed")
 		return
 	}
 
 	// Check for duplicate FiduciaryUser
 	var existingUser models.FiduciaryUser
 	if err := h.MasterDB.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
+		log.Logger.Error().Str("email", req.Email).Msg("Fiduciary user already exists")
 		writeError(w, http.StatusBadRequest, "A user with this email already exists")
 		return
 	}
 
-	// Create Tenant
-	tenantID := uuid.New()
-	tenant := models.Tenant{
-		TenantID:    tenantID,
-		Name:        req.CompanyName,
-		Domain:      req.Domain,
-		Industry:    req.Industry,
-		CompanySize: req.CompanySize,
-		CreatedAt:   time.Now(),
-	}
-	if err := h.MasterDB.Create(&tenant).Error; err != nil {
-		log.Logger.Error().Err(err).Msg("Failed to create tenant")
-		writeError(w, http.StatusInternalServerError, "Could not create organization")
-		return
-	}
+	// Use a transaction for all critical steps
+	err := h.MasterDB.Transaction(func(tx *gorm.DB) error {
+		tenantID := uuid.New()
+		cluster := "us-east" // TODO: Make this dynamic for multi-region
 
-	// Create FiduciaryUser
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to process password")
-		return
-	}
+		tenant := models.Tenant{
+			TenantID:    tenantID,
+			Name:        req.Organization.Name,
+			Industry:    req.Organization.Industry,
+			CompanySize: req.Organization.CompanySize,
+			CreatedAt:   time.Now(),
+			Cluster:     cluster,
+		}
+		if err := tx.Create(&tenant).Error; err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to create tenant")
+			return err
+		}
 
-	verificationToken := auth.GenerateSecureToken()
-	fiduciary := models.FiduciaryUser{
-		ID:                 uuid.New(),
-		TenantID:           tenantID,
-		Email:              req.Email,
-		Name:               req.Name,
-		Phone:              req.Phone,
-		PasswordHash:       string(hashedPassword),
-		Role:               req.Role,
-		IsVerified:         false,
-		VerificationToken:  verificationToken,
-		VerificationExpiry: time.Now().Add(48 * time.Hour),
-	}
-	if err := h.MasterDB.Create(&fiduciary).Error; err != nil {
-		log.Logger.Error().Err(err).Msg("Failed to create fiduciary user")
-		writeError(w, http.StatusInternalServerError, "Could not create user account")
-		return
-	}
+		// Register cluster mapping
+		if err := db.RegisterTenantCluster(tenantID, cluster); err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to register tenant cluster mapping")
+			return err
+		}
 
-	// Send verification email
-	verificationLink := h.Cfg.BaseURL + "/auth/verify-fiduciary?token=" + verificationToken
-	emailBody := "Welcome! Please verify your account by clicking this link: " + verificationLink
-	if err := h.EmailService.Send(req.Email, "Verify Your Account", emailBody); err != nil {
-		log.Logger.Error().Err(err).Msg("Failed to send fiduciary verification email")
-	}
+		schema := "tenant_" + tenantID.String()[:8]
+		clusterDB, ok := db.Clusters[cluster]
+		if !ok {
+			log.Logger.Error().Str("cluster", cluster).Msg("Cluster not found")
+			return fmt.Errorf("cluster not found")
+		}
+		if err := clusterDB.Exec("CREATE SCHEMA IF NOT EXISTS " + schema).Error; err != nil {
+			log.Logger.Error().Err(err).Msg("Schema creation failed")
+			return err
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"fiduciaryId": fiduciary.ID,
-		"tenantId":    tenant.TenantID,
-		"message":     "Organization and admin user created. Please check email for verification link.",
+		// Set search_path and migrate tables
+		if err := clusterDB.Exec("SET search_path TO " + schema).Error; err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to set search_path")
+			return err
+		}
+		if err := clusterDB.AutoMigrate(
+			&models.Purpose{},
+			&models.Consent{},
+			&models.EncryptedConsent{},
+			&models.ConsentForm{},
+			&models.ConsentFormPurpose{},
+			&models.ReviewToken{},
+			&models.Grievance{},
+			&models.GrievanceComment{},
+			&models.BreachNotification{},
+			&models.EncryptedBreachNotification{},
+			&models.Vendor{},
+			&models.DataProcessingAgreement{},
+			&models.EncryptedDataProcessingAgreement{},
+			&models.DPAComplianceCheck{},
+			&models.DSRRequest{},
+			&models.ConsentHistory{},
+			&models.Notification{},
+			&models.NotificationPreferences{},
+			&models.APIKey{},
+			&models.AuditLog{},
+		); err != nil {
+			log.Logger.Error().Err(err).Msg("Migration failed")
+			return err
+		}
+
+		// Create OrganizationEntity
+		org := models.OrganizationEntity{
+			ID:          uuid.New(),
+			TenantID:    tenantID,
+			Name:        req.Organization.Name,
+			TaxID:       req.Organization.TaxID,
+			Website:     req.Organization.Website,
+			Email:       req.Organization.Email,
+			Phone:       req.Organization.Phone,
+			CompanySize: req.Organization.CompanySize,
+			Industry:    req.Organization.Industry,
+			Address:     req.Organization.Address,
+			Country:     req.Organization.Country,
+			CreatedAt:   time.Now(),
+		}
+		if err := h.OrganizationService.CreateOrganization(&org); err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to create organization")
+			return err
+		}
+
+		// Create FiduciaryUser
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to hash password")
+			return err
+		}
+
+		// --- New RBAC Setup ---
+		// 1. Get all available permissions
+		var allPermissions []*models.Permission
+		if err := tx.Find(&allPermissions).Error; err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to fetch all permissions for superadmin role")
+			return err
+		}
+
+		// 2. Create the "Super Admin" role for this tenant
+		superAdminRole := models.Role{
+			ID:          uuid.New(),
+			TenantID:    tenantID,
+			Name:        "Super Admin",
+			Description: "Full access to all features and settings.",
+			Permissions: allPermissions,
+		}
+		if err := tx.Create(&superAdminRole).Error; err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to create superadmin role")
+			return err
+		}
+
+		verificationToken := auth.GenerateSecureToken()
+		fiduciary := models.FiduciaryUser{
+			ID:                 uuid.New(),
+			TenantID:           tenantID,
+			Email:              req.Email,
+			Name:               req.FirstName + " " + req.LastName,
+			Phone:              req.Phone,
+			PasswordHash:       string(hashedPassword),
+			IsVerified:         false,
+			VerificationToken:  verificationToken,
+			VerificationExpiry: time.Now().Add(48 * time.Hour),
+			Roles:              []*models.Role{&superAdminRole}, // Assign the new role
+			// Deprecated fields - set for backward compatibility if needed
+			Role: "superadmin",
+		}
+		if err := tx.Create(&fiduciary).Error; err != nil {
+			log.Logger.Error().Err(err).Msg("Failed to create fiduciary user")
+			return err
+		}
+
+		// Send verification email (do not fail transaction if email fails)
+		go func() {
+			verificationLink := h.Cfg.BaseURL + "/auth/verify-fiduciary?token=" + verificationToken
+			emailBody := "Welcome! Please verify your account by clicking this link: " + verificationLink
+			if err := h.EmailService.Send(req.Email, "Verify Your Account", emailBody); err != nil {
+				log.Logger.Error().Err(err).Msg("Failed to send fiduciary verification email")
+			}
+		}()
+
+		// Success: return tenant and fiduciary IDs
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"fiduciaryId": fiduciary.ID,
+			"tenantId":    tenant.TenantID,
+			"message":     "Organization and admin user created. Please check email for verification link.",
+		})
+		return nil
 	})
+	if err != nil {
+		log.Logger.Error().Err(err).Msg("Fiduciary signup failed, rolling back")
+		writeError(w, http.StatusInternalServerError, "Signup failed: "+err.Error())
+		return
+	}
 }
 
 // SignupDataPrincipal handles the creation of a new end-user (a DataPrincipal).
@@ -140,13 +274,12 @@ func (h *SignupHandler) SignupDataPrincipal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// For now, we'll assume the tenant comes from the authenticated fiduciary user's context.
-	// This needs to be implemented properly with middleware.
-	// tenantID, ok := r.Context().Value(contextkeys.TenantIDKey).(uuid.UUID)
-	// if !ok {
-	// 	writeError(w, http.StatusUnauthorized, "Could not identify tenant from authenticated user")
-	// 	return
-	// }
+	// Check for duplicate DataPrincipal
+	var existingUser models.DataPrincipal
+	if err := h.MasterDB.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
+		writeError(w, http.StatusBadRequest, "A user with this email already exists")
+		return
+	}
 	tenantID := uuid.New() // Placeholder
 
 	// Handle guardian verification for minors
@@ -162,7 +295,23 @@ func (h *SignupHandler) SignupDataPrincipal(w http.ResponseWriter, r *http.Reque
 		guardianTokenExpiry = time.Now().Add(48 * time.Hour)
 	}
 
-	// Create DataPrincipal
+	// Validate password
+	if len(req.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "Password must be at least 8 characters long")
+		return
+	}
+
+	// Hash the password with detailed logging
+	logger.Printf("Hashing password for user: %s", req.Email)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		logger.Printf("Failed to hash password for user %s: %v", req.Email, err)
+		writeError(w, http.StatusInternalServerError, "Failed to process password")
+		return
+	}
+	logger.Printf("Successfully hashed password for user: %s", req.Email)
+
+	// Create DataPrincipal with detailed logging
 	dataPrincipal := models.DataPrincipal{
 		ID:                         uuid.New(),
 		TenantID:                   tenantID,
@@ -172,15 +321,51 @@ func (h *SignupHandler) SignupDataPrincipal(w http.ResponseWriter, r *http.Reque
 		Age:                        req.Age,
 		Location:                   req.Location,
 		Phone:                      req.Phone,
+		PasswordHash:               string(hashedPassword),
 		IsVerified:                 !isGuardianRequired, // Verified unless a guardian is needed
 		IsGuardianVerified:         false,
 		GuardianEmail:              req.GuardianEmail,
 		GuardianVerificationToken:  guardianToken,
 		GuardianVerificationExpiry: guardianTokenExpiry,
+		CreatedAt:                  time.Now(),
+		UpdatedAt:                  time.Now(),
 	}
 
-	if err := h.MasterDB.Create(&dataPrincipal).Error; err != nil {
-		log.Logger.Error().Err(err).Msg("Failed to create data principal")
+	// Log the data principal creation (without sensitive data)
+	logger.Printf("Creating data principal: email=%s, first_name=%s, last_name=%s, age=%d, is_verified=%v",
+		dataPrincipal.Email,
+		dataPrincipal.FirstName,
+		dataPrincipal.LastName,
+		dataPrincipal.Age,
+		dataPrincipal.IsVerified,
+	)
+
+	// Create the user in a transaction to ensure data consistency
+	err = h.MasterDB.Transaction(func(tx *gorm.DB) error {
+		// First create the user
+		if err := tx.Create(&dataPrincipal).Error; err != nil {
+			logger.Printf("Failed to create data principal in database: %v", err)
+			return err
+		}
+
+		// Verify the password was stored correctly by reading it back
+		var createdUser models.DataPrincipal
+		if err := tx.Select("id", "email", "password_hash").
+			Where("id = ?", dataPrincipal.ID).
+			First(&createdUser).Error; err != nil {
+			logger.Printf("Failed to verify created user: %v", err)
+			return err
+		}
+
+		// Log the creation (without sensitive data)
+		logger.Printf("Successfully created user %s with ID %s",
+			createdUser.Email, createdUser.ID)
+
+		return nil
+	})
+
+	if err != nil {
+		logger.Printf("Transaction failed during user creation: %v", err)
 		writeError(w, http.StatusInternalServerError, "Could not create user")
 		return
 	}
@@ -302,7 +487,7 @@ func validateFiduciaryRequest(req *FiduciarySignupRequest, w http.ResponseWriter
 		writeError(w, http.StatusBadRequest, "Password must be at least 8 characters")
 		return false
 	}
-	if req.CompanyName == "" || req.Name == "" {
+	if req.Organization.Name == "" || req.FirstName == "" || req.LastName == "" {
 		writeError(w, http.StatusBadRequest, "Company and user name are required")
 		return false
 	}

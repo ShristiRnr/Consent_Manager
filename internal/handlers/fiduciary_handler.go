@@ -1,12 +1,13 @@
 package handlers
 
 import (
-	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	contextKey "consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/repository"
 	"consultrnr/consent-manager/internal/services"
 	"consultrnr/consent-manager/pkg/log"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,7 +76,7 @@ func GetFiduciaryByIDHandler(fiduciaryService *services.FiduciaryService) http.H
 
 		fiduciary, err := fiduciaryService.GetFiduciaryByID(fiduciaryID)
 		if err != nil {
-			if err == gorm.ErrRecordNotFound {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				writeError(w, http.StatusNotFound, "fiduciary user not found")
 				return
 			}
@@ -127,7 +128,7 @@ func UpdateFiduciaryDataHandler(fiduciaryService *services.FiduciaryService) htt
 		}
 
 		// Authorization: only admins can update fiduciaries
-		_, ok := r.Context().Value(contextKey.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+		_, ok := r.Context().Value(contextKey.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 		if !ok {
 			writeError(w, http.StatusForbidden, "fiduciary access required")
 			return
@@ -142,7 +143,7 @@ func UpdateFiduciaryDataHandler(fiduciaryService *services.FiduciaryService) htt
 		fiduciary, err := fiduciaryService.UpdateFiduciary(fiduciaryID, &req)
 		if err != nil {
 			log.Logger.Error().Err(err).Msg("failed to update fiduciary user")
-			if err == gorm.ErrRecordNotFound {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				writeError(w, http.StatusNotFound, "fiduciary user not found")
 				return
 			}
@@ -170,7 +171,7 @@ func DeleteFiduciaryByIDHandler(fiduciaryService *services.FiduciaryService) htt
 		}
 
 		// Authorization: only admins can delete fiduciaries
-		_, ok := r.Context().Value(contextKey.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+		_, ok := r.Context().Value(contextKey.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 		if !ok {
 			writeError(w, http.StatusForbidden, "fiduciary access required")
 			return
@@ -179,7 +180,7 @@ func DeleteFiduciaryByIDHandler(fiduciaryService *services.FiduciaryService) htt
 		err = fiduciaryService.DeleteFiduciary(fiduciaryID)
 		if err != nil {
 			log.Logger.Error().Err(err).Msg("failed to delete fiduciary user")
-			if err == gorm.ErrRecordNotFound {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				writeError(w, http.StatusNotFound, "fiduciary user not found")
 				return
 			}

@@ -130,27 +130,29 @@ type CreateDSRRequest struct {
 
 // Consent Form DTOs
 type CreateConsentFormRequest struct {
-	Name                    string `json:"name" binding:"required"`
-	Title                   string `json:"title" binding:"required"`
-	Description             string `json:"description"`
-	DataCollectionAndUsage  string `json:"dataCollectionAndUsage"`
-	DataSharingAndTransfers string `json:"dataSharingAndTransfers"`
-	DataRetentionPeriod     string `json:"dataRetentionPeriod"`
-	UserRightsSummary       string `json:"userRightsSummary"`
-	TermsAndConditions      string `json:"termsAndConditions"`
-	PrivacyPolicy           string `json:"privacyPolicy"`
+	Name                 string  `json:"name" binding:"required"`
+	Title                string  `json:"title" binding:"required"`
+	Description          *string `json:"description,omitempty"`
+	Department           *string `json:"department,omitempty"`
+	Project              *string `json:"project,omitempty"`
+	OrganizationEntityID *string `json:"organizationEntityId,omitempty"`
+	DataRetentionPeriod  *string `json:"dataRetentionPeriod,omitempty"`
+	UserRightsSummary    *string `json:"userRightsSummary,omitempty"`
+	TermsAndConditions   *string `json:"termsAndConditions,omitempty"`
+	PrivacyPolicy        *string `json:"privacyPolicy,omitempty"`
 }
 
 type UpdateConsentFormRequest struct {
-	Name                    string `json:"name"`
-	Title                   string `json:"title"`
-	Description             string `json:"description"`
-	DataCollectionAndUsage  string `json:"dataCollectionAndUsage"`
-	DataSharingAndTransfers string `json:"dataSharingAndTransfers"`
-	DataRetentionPeriod     string `json:"dataRetentionPeriod"`
-	UserRightsSummary       string `json:"userRightsSummary"`
-	TermsAndConditions      string `json:"termsAndConditions"`
-	PrivacyPolicy           string `json:"privacyPolicy"`
+	Name                 *string `json:"name,omitempty"`
+	Title                *string `json:"title,omitempty"`
+	Description          *string `json:"description,omitempty"`
+	Department           *string `json:"department,omitempty"`
+	Project              *string `json:"project,omitempty"`
+	OrganizationEntityID *string `json:"organizationEntityId,omitempty"`
+	DataRetentionPeriod  *string `json:"dataRetentionPeriod,omitempty"`
+	UserRightsSummary    *string `json:"userRightsSummary,omitempty"`
+	TermsAndConditions   *string `json:"termsAndConditions,omitempty"`
+	PrivacyPolicy        *string `json:"privacyPolicy,omitempty"`
 }
 
 type AddPurposeToConsentFormRequest struct {
@@ -191,7 +193,9 @@ type ConsentFormResponse struct {
 }
 
 type SubmitConsentRequest struct {
-	Purposes []PurposeConsent `json:"purposes"`
+	UserID        string           `json:"userId" binding:"required,uuid"`
+	ConsentFormID string           `json:"consentFormId" binding:"required,uuid"`
+	Purposes      []PurposeConsent `json:"purposes"`
 }
 
 type PurposeConsent struct {
@@ -210,6 +214,19 @@ type CreateBreachNotificationRequest struct {
 	DetectionDate      time.Time `json:"detectionDate" binding:"required"`
 	AffectedUsersCount int       `json:"affectedUsersCount" binding:"required"`
 	Status             string    `json:"status" binding:"required"`
+}
+
+type UpdateBreachNotificationRequest struct {
+	Description          string    `json:"description"`
+	BreachDate          time.Time `json:"breachDate"`
+	DetectionDate       time.Time `json:"detectionDate"`
+	AffectedUsersCount  int       `json:"affectedUsersCount"`
+	Severity            string    `json:"severity"`
+	BreachType          string    `json:"breachType"`
+	Status              string    `json:"status"`
+	RequiresDPBReporting bool     `json:"requiresDPBReporting"`
+	RemedialActions     string    `json:"remedialActions"`
+	PreventiveMeasures  string    `json:"preventiveMeasures"`
 }
 
 type BreachNotificationResponse struct {

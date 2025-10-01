@@ -12,6 +12,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v4 v4.13.3
 	github.com/lib/pq v1.10.9
+	github.com/mvrilo/go-redoc v0.1.5
 	github.com/natefinch/lumberjack v2.0.0+incompatible
 	github.com/prometheus/client_golang v1.22.0
 	github.com/rs/zerolog v1.34.0
@@ -22,6 +23,7 @@ require (
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
 	gorm.io/datatypes v1.2.5
 	gorm.io/driver/postgres v1.5.11
+	gorm.io/driver/sqlite v1.4.3
 	gorm.io/gorm v1.25.12
 )
 
@@ -49,6 +51,7 @@ require (
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-sqlite3 v1.14.15 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect

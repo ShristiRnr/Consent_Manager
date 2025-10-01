@@ -19,18 +19,43 @@ func NewConsentFormService(repo *repository.ConsentFormRepository) *ConsentFormS
 }
 
 func (s *ConsentFormService) CreateConsentForm(tenantID uuid.UUID, req *dto.CreateConsentFormRequest) (*models.ConsentForm, error) {
+	var orgID uuid.UUID
+	var err error
+	if req.OrganizationEntityID != nil && *req.OrganizationEntityID != "" {
+		orgID, err = uuid.Parse(*req.OrganizationEntityID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid organizationEntityId: %w", err)
+		}
+	}
+
 	form := &models.ConsentForm{
-		ID:                      uuid.New(),
-		TenantID:                tenantID,
-		Name:                    req.Name,
-		Title:                   req.Title,
-		Description:             req.Description,
-		DataCollectionAndUsage:  req.DataCollectionAndUsage,
-		DataSharingAndTransfers: req.DataSharingAndTransfers,
-		DataRetentionPeriod:     req.DataRetentionPeriod,
-		UserRightsSummary:       req.UserRightsSummary,
-		TermsAndConditions:      req.TermsAndConditions,
-		PrivacyPolicy:           req.PrivacyPolicy,
+		ID:       uuid.New(),
+		TenantID: tenantID,
+		Name:     req.Name,
+		Title:    req.Title,
+	}
+
+	if req.Description != nil {
+		form.Description = *req.Description
+	}
+	if req.Department != nil {
+		form.Department = *req.Department
+	}
+	if req.Project != nil {
+		form.Project = *req.Project
+	}
+	form.OrganizationEntityID = orgID
+	if req.DataRetentionPeriod != nil {
+		form.DataRetentionPeriod = *req.DataRetentionPeriod
+	}
+	if req.UserRightsSummary != nil {
+		form.UserRightsSummary = *req.UserRightsSummary
+	}
+	if req.TermsAndConditions != nil {
+		form.TermsAndConditions = *req.TermsAndConditions
+	}
+	if req.PrivacyPolicy != nil {
+		form.PrivacyPolicy = *req.PrivacyPolicy
 	}
 	return s.repo.CreateConsentForm(form)
 }
@@ -41,32 +66,43 @@ func (s *ConsentFormService) UpdateConsentForm(formID uuid.UUID, req *dto.Update
 		return nil, err
 	}
 
-	if req.Name != "" {
-		form.Name = req.Name
+	if req.Name != nil {
+		form.Name = *req.Name
 	}
-	if req.Title != "" {
-		form.Title = req.Title
+	if req.Title != nil {
+		form.Title = *req.Title
 	}
-	if req.Description != "" {
-		form.Description = req.Description
+	if req.Description != nil {
+		form.Description = *req.Description
 	}
-	if req.DataCollectionAndUsage != "" {
-		form.DataCollectionAndUsage = req.DataCollectionAndUsage
+	if req.Department != nil {
+		form.Department = *req.Department
 	}
-	if req.DataSharingAndTransfers != "" {
-		form.DataSharingAndTransfers = req.DataSharingAndTransfers
+	if req.Project != nil {
+		form.Project = *req.Project
 	}
-	if req.DataRetentionPeriod != "" {
-		form.DataRetentionPeriod = req.DataRetentionPeriod
+	if req.OrganizationEntityID != nil {
+		if *req.OrganizationEntityID == "" {
+			form.OrganizationEntityID = uuid.Nil
+		} else {
+			orgID, err := uuid.Parse(*req.OrganizationEntityID)
+			if err != nil {
+				return nil, fmt.Errorf("invalid organizationEntityId: %w", err)
+			}
+			form.OrganizationEntityID = orgID
+		}
 	}
-	if req.UserRightsSummary != "" {
-		form.UserRightsSummary = req.UserRightsSummary
+	if req.DataRetentionPeriod != nil {
+		form.DataRetentionPeriod = *req.DataRetentionPeriod
 	}
-	if req.TermsAndConditions != "" {
-		form.TermsAndConditions = req.TermsAndConditions
+	if req.UserRightsSummary != nil {
+		form.UserRightsSummary = *req.UserRightsSummary
 	}
-	if req.PrivacyPolicy != "" {
-		form.PrivacyPolicy = req.PrivacyPolicy
+	if req.TermsAndConditions != nil {
+		form.TermsAndConditions = *req.TermsAndConditions
+	}
+	if req.PrivacyPolicy != nil {
+		form.PrivacyPolicy = *req.PrivacyPolicy
 	}
 
 	return s.repo.UpdateConsentForm(form)

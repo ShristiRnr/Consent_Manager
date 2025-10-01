@@ -3,8 +3,9 @@ package middlewares
 import (
 	"net/http"
 
-	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -34,7 +35,7 @@ func init() {
 func PrometheusMetricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// extract claims from *http.Request
-		claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+		claims, _ := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 		tenantID := ""
 		if claims != nil {
 			tenantID = claims.TenantID

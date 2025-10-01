@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/middlewares"
@@ -121,14 +121,6 @@ func (h *PurposeHandler) ToggleActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idStr := mux.Vars(r)["id"]
-	var payload struct {
-		Active bool `json:"active"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid payload")
-		return
-	}
-
 	var purpose models.Purpose
 	if err := dbConn.First(&purpose, "id = ?", idStr).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -139,7 +131,8 @@ func (h *PurposeHandler) ToggleActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	purpose.Active = payload.Active
+	// Toggle the Active field
+	purpose.Active = !purpose.Active
 	if err := dbConn.Save(&purpose).Error; err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update purpose")
 		return
@@ -180,7 +173,7 @@ func ListPurposesHandler() http.HandlerFunc {
 // Get /api/v1/user/purposes/{id}
 func UserGetPurposeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+		claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 		if !ok {
 			writeError(w, http.StatusForbidden, "user access required")
 			return
@@ -233,7 +226,7 @@ func UserGetPurposeHandler() http.HandlerFunc {
 // GET /api/v1/user/purposes/{tenantID}
 func UserGetPurposeByTenant() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+		claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 		if !ok {
 			writeError(w, http.StatusForbidden, "user access required")
 			return

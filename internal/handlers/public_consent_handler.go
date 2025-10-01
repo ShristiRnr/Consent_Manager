@@ -1,12 +1,13 @@
 package handlers
 
 import (
-	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/dto"
 	"consultrnr/consent-manager/internal/services"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -15,10 +16,11 @@ import (
 type PublicConsentHandler struct {
 	userConsentService *services.UserConsentService
 	consentFormService *services.ConsentFormService
+	webhookService     *services.WebhookService
 }
 
-func NewPublicConsentHandler(userConsentService *services.UserConsentService, consentFormService *services.ConsentFormService) *PublicConsentHandler {
-	return &PublicConsentHandler{userConsentService: userConsentService, consentFormService: consentFormService}
+func NewPublicConsentHandler(userConsentService *services.UserConsentService, consentFormService *services.ConsentFormService, webhookService *services.WebhookService) *PublicConsentHandler {
+	return &PublicConsentHandler{userConsentService: userConsentService, consentFormService: consentFormService, webhookService: webhookService}
 }
 
 func (h *PublicConsentHandler) GetConsentForm(w http.ResponseWriter, r *http.Request) {
@@ -46,7 +48,7 @@ func (h *PublicConsentHandler) SubmitConsent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "User claims not found")
 		return
@@ -75,11 +77,19 @@ func (h *PublicConsentHandler) SubmitConsent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Dispatch a webhook event for the consent update
+	go h.webhookService.Dispatch(tenantID, "consent.updated", map[string]interface{}{
+		"userId":        userID.String(),
+		"consentFormId": formID.String(),
+		"purposes":      req.Purposes,
+		"updatedAt":     time.Now(),
+	})
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *PublicConsentHandler) GetUserConsents(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "User claims not found")
 		return
@@ -114,7 +124,7 @@ func (h *PublicConsentHandler) WithdrawConsent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "User claims not found")
 		return
@@ -137,6 +147,13 @@ func (h *PublicConsentHandler) WithdrawConsent(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Dispatch a webhook event for consent withdrawal
+	go h.webhookService.Dispatch(tenantID, "consent.withdrawn", map[string]interface{}{
+		"userId":    userID.String(),
+		"purposeId": purposeID.String(),
+		"updatedAt": time.Now(),
+	})
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -148,7 +165,7 @@ func (h *PublicConsentHandler) GetUserConsentForPurpose(w http.ResponseWriter, r
 		return
 	}
 
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "User claims not found")
 		return

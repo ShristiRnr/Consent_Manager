@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"consultrnr/consent-manager/internal/auth"
+	"consultrnr/consent-manager/internal/claims"
 	"consultrnr/consent-manager/internal/contextkeys"
 	"consultrnr/consent-manager/internal/db"
 	"consultrnr/consent-manager/internal/middlewares"
@@ -121,7 +122,7 @@ func (h *ConsentHandler) AdminListTenantUsers(w http.ResponseWriter, r *http.Req
 }
 
 func (h *ConsentHandler) GetAllUserConsents(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized - missing claims")
 		log.Logger.Error().Msg("unauthorized access - missing claims")
@@ -152,7 +153,7 @@ type userTenant struct {
 
 // UserTenantLink fetch as per userid
 func (h *ConsentHandler) UserTenantLink(w http.ResponseWriter, r *http.Request) ([]userTenant, error) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		return nil, errors.New("user access required")
 	}
@@ -196,7 +197,7 @@ func (h *ConsentHandler) GetConsents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ConsentHandler) GetConsentHistory(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -219,7 +220,7 @@ func (h *ConsentHandler) GetConsentHistory(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *ConsentHandler) UpdateConsents(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -259,7 +260,7 @@ func (h *ConsentHandler) UpdateConsents(w http.ResponseWriter, r *http.Request) 
 
 // POST /guardian/consents/approve
 func (h *ConsentHandler) GuardianApproveConsent(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -327,7 +328,7 @@ func (h *ConsentHandler) GuardianDigiLockerCallback(w http.ResponseWriter, r *ht
 
 // withdraw specific consent by purpose
 func (h *ConsentHandler) WithdrawConsentByPurpose(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -359,8 +360,82 @@ func (h *ConsentHandler) WithdrawConsentByPurpose(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]string{"status": "success"})
 }
 
+// GetConsentStats provides consent statistics for dashboard
+func (h *ConsentHandler) GetConsentStats(w http.ResponseWriter, r *http.Request) {
+	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	tenantID, err := uuid.Parse(claims.TenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tenant ID")
+		return
+	}
+
+	// Get consent statistics from database
+	var totalConsents int64
+	var activeConsents int64
+	var expiredConsents int64
+	var withdrawnConsents int64
+
+	// Count total consents for tenant
+	if err := db.MasterDB.Model(&models.Consent{}).Where("tenant_id = ?", tenantID).Count(&totalConsents).Error; err != nil {
+		log.Logger.Error().Err(err).Msg("failed to get total consent count")
+		writeError(w, http.StatusInternalServerError, "failed to get consent statistics")
+		return
+	}
+
+	// Count active consents (not expired, not withdrawn)
+	if err := db.MasterDB.Model(&models.Consent{}).Where("tenant_id = ? AND status = ?", tenantID, "active").Count(&activeConsents).Error; err != nil {
+		log.Logger.Error().Err(err).Msg("failed to get active consent count")
+		activeConsents = 0
+	}
+
+	// Count expired consents
+	if err := db.MasterDB.Model(&models.Consent{}).Where("tenant_id = ? AND status = ?", tenantID, "expired").Count(&expiredConsents).Error; err != nil {
+		log.Logger.Error().Err(err).Msg("failed to get expired consent count")
+		expiredConsents = 0
+	}
+
+	// Count withdrawn consents
+	if err := db.MasterDB.Model(&models.Consent{}).Where("tenant_id = ? AND status = ?", tenantID, "withdrawn").Count(&withdrawnConsents).Error; err != nil {
+		log.Logger.Error().Err(err).Msg("failed to get withdrawn consent count")
+		withdrawnConsents = 0
+	}
+
+	// Get consent breakdown by purpose
+	var purposeStats []struct {
+		PurposeID string `json:"purpose_id"`
+		Count     int64  `json:"count"`
+	}
+	if err := db.MasterDB.Model(&models.Consent{}).
+		Select("purpose_id, COUNT(*) as count").
+		Where("tenant_id = ?", tenantID).
+		Group("purpose_id").
+		Scan(&purposeStats).Error; err != nil {
+		log.Logger.Error().Err(err).Msg("failed to get purpose statistics")
+		purposeStats = []struct {
+			PurposeID string `json:"purpose_id"`
+			Count     int64  `json:"count"`
+		}{}
+	}
+
+	stats := map[string]interface{}{
+		"total":     totalConsents,
+		"active":    activeConsents,
+		"expired":   expiredConsents,
+		"withdrawn": withdrawnConsents,
+		"byPurpose": purposeStats,
+		"timestamp": "2025-09-26T22:30:00Z",
+	}
+
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (h *ConsentHandler) GetUserConsentInTenant(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "user access required")
 		return
@@ -390,7 +465,7 @@ func (h *ConsentHandler) APIGetUserConsentInTenant(w http.ResponseWriter, r *htt
 		return
 	}
 
-	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*auth.DataPrincipalClaims)
+	claims, ok := r.Context().Value(contextkeys.UserClaimsKey).(*claims.DataPrincipalClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "user access required")
 		return
@@ -434,7 +509,7 @@ func (h *ConsentHandler) GetConsentLogs(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *ConsentHandler) AdminOverrideConsent(w http.ResponseWriter, r *http.Request) {
-	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*auth.FiduciaryClaims)
+	claims, ok := r.Context().Value(contextkeys.FiduciaryClaimsKey).(*claims.FiduciaryClaims)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "fiduciary access required")
 		return

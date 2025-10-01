@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"gorm.io/datatypes"
 )
 
 type BreachNotificationHandler struct {
@@ -117,7 +118,7 @@ func (h *BreachNotificationHandler) ListBreachNotifications(w http.ResponseWrite
 	}
 
 	// Audit logging for breach notification list access
-	if h.AuditService != nil && claims != nil {
+	if h.AuditService != nil {
 		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
 		go h.AuditService.Create(r.Context(), fiduciaryID, tenantID, uuid.Nil, "breach_notification_list_accessed", "accessed", claims.FiduciaryID, r.RemoteAddr, "", "", map[string]interface{}{
 			"notifications_count": len(notifications),
@@ -126,4 +127,166 @@ func (h *BreachNotificationHandler) ListBreachNotifications(w http.ResponseWrite
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(notifications)
+}
+
+func (h *BreachNotificationHandler) UpdateBreachNotification(w http.ResponseWriter, r *http.Request) {
+	claims := middlewares.GetFiduciaryAuthClaims(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusForbidden, "fiduciary access required")
+		return
+	}
+
+	vars := mux.Vars(r)
+	notificationID, err := uuid.Parse(vars["notificationId"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid notification ID")
+		return
+	}
+
+	tenantID, err := uuid.Parse(claims.TenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tenant ID")
+		return
+	}
+
+	var request dto.UpdateBreachNotificationRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Get existing notification to verify ownership
+	existingNotification, err := h.service.GetByID(notificationID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "breach notification not found")
+		return
+	}
+
+	if existingNotification.TenantID != tenantID {
+		writeError(w, http.StatusForbidden, "access denied")
+		return
+	}
+
+	// Convert string fields to JSON
+	var remedialActionsJSON datatypes.JSON
+	var preventiveMeasuresJSON datatypes.JSON
+	
+	if request.RemedialActions != "" {
+		remedialActionsJSON = datatypes.JSON([]byte(`["` + request.RemedialActions + `"]`))
+	}
+	
+	if request.PreventiveMeasures != "" {
+		preventiveMeasuresJSON = datatypes.JSON([]byte(`["` + request.PreventiveMeasures + `"]`))
+	}
+
+	// Update the notification
+	updatedNotification := &models.BreachNotification{
+		ID:                   notificationID,
+		TenantID:             tenantID,
+		Description:          request.Description,
+		BreachDate:           request.BreachDate,
+		DetectionDate:        request.DetectionDate,
+		AffectedUsersCount:   request.AffectedUsersCount,
+		Severity:             request.Severity,
+		BreachType:           request.BreachType,
+		Status:               request.Status,
+		RequiresDPBReporting: request.RequiresDPBReporting,
+		RemedialActions:      remedialActionsJSON,
+		PreventiveMeasures:   preventiveMeasuresJSON,
+	}
+
+	if err := h.service.Update(updatedNotification); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update breach notification")
+		return
+	}
+
+	// Audit logging
+	if h.AuditService != nil {
+		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
+		go h.AuditService.Create(r.Context(), fiduciaryID, tenantID, notificationID, "breach_notification_updated", "updated", claims.FiduciaryID, r.RemoteAddr, "", "", map[string]interface{}{
+			"notification_id": notificationID,
+		})
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(updatedNotification)
+}
+
+func (h *BreachNotificationHandler) DeleteBreachNotification(w http.ResponseWriter, r *http.Request) {
+	claims := middlewares.GetFiduciaryAuthClaims(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusForbidden, "fiduciary access required")
+		return
+	}
+
+	vars := mux.Vars(r)
+	notificationID, err := uuid.Parse(vars["notificationId"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid notification ID")
+		return
+	}
+
+	tenantID, err := uuid.Parse(claims.TenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tenant ID")
+		return
+	}
+
+	// Get existing notification to verify ownership
+	existingNotification, err := h.service.GetByID(notificationID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "breach notification not found")
+		return
+	}
+
+	if existingNotification.TenantID != tenantID {
+		writeError(w, http.StatusForbidden, "access denied")
+		return
+	}
+
+	if err := h.service.Delete(notificationID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete breach notification")
+		return
+	}
+
+	// Audit logging
+	if h.AuditService != nil {
+		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
+		go h.AuditService.Create(r.Context(), fiduciaryID, tenantID, notificationID, "breach_notification_deleted", "deleted", claims.FiduciaryID, r.RemoteAddr, "", "", map[string]interface{}{
+			"notification_id": notificationID,
+		})
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *BreachNotificationHandler) GetBreachStats(w http.ResponseWriter, r *http.Request) {
+	claims := middlewares.GetFiduciaryAuthClaims(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusForbidden, "fiduciary access required")
+		return
+	}
+
+	tenantID, err := uuid.Parse(claims.TenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tenant ID")
+		return
+	}
+
+	stats, err := h.service.GetStatsByTenant(tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get breach statistics")
+		return
+	}
+
+	// Audit logging
+	if h.AuditService != nil {
+		fiduciaryID, _ := uuid.Parse(claims.FiduciaryID)
+		go h.AuditService.Create(r.Context(), fiduciaryID, tenantID, uuid.Nil, "breach_stats_accessed", "accessed", claims.FiduciaryID, r.RemoteAddr, "", "", map[string]interface{}{
+			"total_breaches": stats["total"],
+		})
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(stats)
 }

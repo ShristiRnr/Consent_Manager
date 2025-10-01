@@ -11,16 +11,16 @@ import (
 	"gorm.io/gorm"
 )
 
-func CreateTenant(ctx context.Context, db *gorm.DB, name, domain string) (*models.Tenant, error) {
+func CreateTenant(ctx context.Context, db *gorm.DB, name, industry string) (*models.Tenant, error) {
 	tenantID := uuid.New()
 	tenant := &models.Tenant{
 		TenantID: tenantID,
 		Name:     name,
-		Domain:   domain,
+		Industry: industry,
 	}
 
 	if err := db.WithContext(ctx).Create(&tenant).Error; err != nil {
-		log.Ctx(ctx).Error().Err(err).Str("domain", domain).Msg("Failed to create tenant entry")
+		log.Ctx(ctx).Error().Err(err).Str("industry", industry).Msg("Failed to create tenant entry")
 		return nil, fmt.Errorf("create tenant: %w", err)
 	}
 
